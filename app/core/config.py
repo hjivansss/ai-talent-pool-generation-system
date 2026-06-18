@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     OLLAMA_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen2.5-coder:3b"
 
-    DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/ai_talent_pool_search"
+    DATABASE_URL: str 
 
     model_config = SettingsConfigDict(
         env_file=".env",

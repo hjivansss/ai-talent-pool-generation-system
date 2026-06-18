@@ -3,6 +3,11 @@ from fastapi import FastAPI
 from app.core.config import settings
 from app.api.router import router as api_router 
 
+from app.core.database import Base, engine
+from app.models.job_description import JobDescription
+
+Base.metadata.create_all(bind=engine)
+
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,

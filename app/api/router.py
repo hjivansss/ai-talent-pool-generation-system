@@ -1,9 +1,16 @@
 #This will maintain the api routes for better organization (main.py will be less cluttered)
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException , Depends
 from app.integrations.ollama_client import ollama_client
 
 from app.services.jd_extraction_service import jd_extraction_service
-from app.schemas.jd_schema import JobDescriptionRequest, ExtractedJDResponse
+from app.schemas.jd_schema import (
+    JobDescriptionRequest, 
+    ExtractedJDResponse , 
+    SavedJDResponse)
+
+from sqlalchemy.orm import Session
+from app.repositories.job_description_repository import job_description_repository
+from app.core.database import get_db
 
 router = APIRouter()
 
@@ -43,3 +50,25 @@ async def extract_jd(payload: JobDescriptionRequest):
             status_code=500,
             detail=str(e)
         )
+
+#endpoint that extracts JD and saves it into Neon.
+@router.post("/extract_and_save_jd", response_model=SavedJDResponse)
+async def extract_and_save_jd(
+    payload: JobDescriptionRequest,
+    db: Session = Depends(get_db)
+):
+    try:
+        extracted_data = await jd_extraction_service.extract(
+            payload.job_description
+        )
+
+        saved_jd = job_description_repository.create(
+            db=db,
+            original_text=payload.job_description,
+            extracted_data=extracted_data
+        )
+
+        return saved_jd
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

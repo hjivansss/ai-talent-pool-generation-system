@@ -11,3 +11,15 @@ class ExtractedJDResponse(BaseModel):
     required_skills: List[str]
     experience_required: str
     qualifications: List[str]
+
+#response schema for DB-saved JD.
+class SavedJDResponse(BaseModel):
+    id: int
+    original_text: str
+    job_role: str
+    required_skills: List[str]
+    experience_required: str
+    qualifications: List[str]
+
+    class Config:
+        from_attributes = True
