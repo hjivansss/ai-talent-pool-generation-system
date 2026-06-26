@@ -12,6 +12,10 @@ from sqlalchemy.orm import Session
 from app.repositories.job_description_repository import job_description_repository
 from app.core.database import get_db
 
+
+from app.schemas.candidate_schema import CandidateSearchRequest, CandidateSearchResponse
+from app.services.candidate_search_service import candidate_search_service
+
 router = APIRouter()
 
 @router.get("/")
@@ -69,6 +73,26 @@ async def extract_and_save_jd(
         )
 
         return saved_jd
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    
+#GitHub candidate search
+@router.post("/search/github", response_model=CandidateSearchResponse)
+async def search_github_candidates(payload: CandidateSearchRequest):
+    try:
+        query, candidates = await candidate_search_service.search_github_candidates(
+            skills=payload.skills,
+            location=payload.location,
+            limit=payload.limit
+        )
+
+        return CandidateSearchResponse(
+            query=query,
+            total_found=len(candidates),
+            candidates=candidates
+        )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

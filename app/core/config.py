@@ -10,7 +10,9 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = "qwen2.5-coder:3b"
 
     DATABASE_URL: str 
-
+    
+    GITHUB_TOKEN: str | None = None
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8"
