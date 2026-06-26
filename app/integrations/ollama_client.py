@@ -9,22 +9,21 @@ class OllamaClient:
         self.base_url = settings.OLLAMA_URL
         self.model = settings.OLLAMA_MODEL
 
-    async def generate(self, prompt: str) -> str:
+    async def generate(self, prompt: str , temperature: float = 0.1) -> str:
         url = f"{self.base_url}/api/generate"
 
         payload = {
             "model": self.model,
             "prompt": prompt,
-            "stream": False
+            "stream": False,
+            "options": {"temperature": temperature}, # Low temperature = more deterministic output = more consistent JSON.
         }
 
         async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(url, json=payload)
             response.raise_for_status()
-
-        data = response.json()
-
-        return data.get("response", "")
+        
+        return response.json().get("response", "")
 
 
 ollama_client = OllamaClient()
