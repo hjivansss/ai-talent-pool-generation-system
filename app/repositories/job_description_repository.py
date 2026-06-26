@@ -9,21 +9,26 @@ class JobDescriptionRepository:
         self,
         db: Session,
         original_text: str,
-        extracted_data: ExtractedJDResponse
-        ) -> JobDescription:
-    
+        extracted_data: ExtractedJDResponse,
+    ) -> JobDescription:
         job_description = JobDescription(
-                original_text=original_text,
-                job_role=extracted_data.job_role,
-                required_skills=extracted_data.required_skills,
-                experience_required=extracted_data.experience_required,
-                qualifications=extracted_data.qualifications
+            original_text        = original_text,
+            job_role             = extracted_data.job_role,
+            seniority_level      = extracted_data.seniority_level,
+            required_skills      = extracted_data.required_skills,
+            nice_to_have_skills  = extracted_data.nice_to_have_skills,
+            experience_required  = extracted_data.experience_required,
+            qualifications       = extracted_data.qualifications,
+            employment_type      = extracted_data.employment_type,
+            domain               = extracted_data.domain,
+            key_responsibilities = extracted_data.key_responsibilities,
+            tools_and_platforms  = extracted_data.tools_and_platforms,
+            location             = extracted_data.location,
         )
-
         db.add(job_description)
         db.commit()
         db.refresh(job_description)
-
         return job_description
-    
+
+
 job_description_repository = JobDescriptionRepository()
