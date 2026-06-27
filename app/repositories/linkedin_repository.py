@@ -22,6 +22,7 @@ class LinkedInRepository:
             current_role           = profile.current_role,
             current_company        = profile.current_company,
             open_to_work           = profile.open_to_work,
+            source                 = profile.source,
         )
         db.add(record)
         db.commit()

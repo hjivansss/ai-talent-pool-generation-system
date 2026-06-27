@@ -23,4 +23,6 @@ class LinkedInProfileModel(Base):
     current_role          = Column(String(255), nullable=True)
     current_company       = Column(String(255), nullable=True)
     open_to_work          = Column(Boolean, default=False)
+    # tracks whether profile came from manual entry or ZIP upload
+    source                 = Column(String(50), default="linkedin_manual")
     created_at            = Column(DateTime(timezone=True), server_default=func.now())
