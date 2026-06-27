@@ -105,6 +105,7 @@ class LinkedInProfile(BaseModel):
 
     source: str = "linkedin_manual"
 
+# ── LinkedIn request/response wrappers ──────────────────────────────────────────
 
 class LinkedInIngestRequest(BaseModel):
     profiles: List[LinkedInProfile]
@@ -113,3 +114,8 @@ class LinkedInIngestRequest(BaseModel):
 class LinkedInIngestResponse(BaseModel):
     total_saved: int
     profiles: List[LinkedInProfile]
+
+
+class LinkedInZipUploadResponse(BaseModel):
+    message: str
+    profile: LinkedInProfile
