@@ -5,6 +5,7 @@ from app.api.router import router as api_router
 
 from app.core.database import Base, engine
 from app.models.job_description import JobDescription
+from app.models.linkedin_profile import LinkedInProfileModel
 
 Base.metadata.create_all(bind=engine)
 

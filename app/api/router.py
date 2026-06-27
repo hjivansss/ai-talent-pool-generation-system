@@ -13,8 +13,17 @@ from app.repositories.job_description_repository import job_description_reposito
 from app.core.database import get_db
 
 
-from app.schemas.candidate_schema import CandidateSearchRequest, CandidateSearchResponse
+from app.schemas.candidate_schema import (
+    CandidateSearchRequest,
+    CandidateSearchResponse,
+    LinkedInProfile,
+    LinkedInIngestRequest,
+    LinkedInIngestResponse,
+)
+
 from app.services.candidate_search_service import candidate_search_service
+from app.repositories.linkedin_repository import linkedin_repository
+
 
 router = APIRouter()
 
@@ -78,21 +87,83 @@ async def extract_and_save_jd(
         raise HTTPException(status_code=500, detail=str(e))
     
     
-#GitHub candidate search
+
+# ── GitHub candidate search ─────────────────────────────────────────────────────
+
 @router.post("/search/github", response_model=CandidateSearchResponse)
 async def search_github_candidates(payload: CandidateSearchRequest):
     try:
         query, candidates = await candidate_search_service.search_github_candidates(
             skills=payload.skills,
             location=payload.location,
-            limit=payload.limit
+            limit=payload.limit,
         )
-
         return CandidateSearchResponse(
             query=query,
             total_found=len(candidates),
-            candidates=candidates
+            candidates=candidates,
         )
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── LinkedIn manual ingestion ───────────────────────────────────────────────────
+
+@router.post("/ingest/linkedin", response_model=LinkedInIngestResponse)
+async def ingest_linkedin_profiles(
+    payload: LinkedInIngestRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Recruiter manually enters LinkedIn profiles here.
+    Each profile is validated and saved to the linkedin_profiles table.
+
+    Key field: set open_to_work: true to flag candidates actively looking.
+    These will be prioritised in Phase 6 matching.
+    """
+    saved = []
+    for profile in payload.profiles:
+        try:
+            linkedin_repository.create(db=db, profile=profile)
+            saved.append(profile)
+        except Exception as e:
+            # Skip failed saves, don't abort the whole batch
+            print(f"[LinkedIn ingest] failed to save {profile.full_name}: {e}")
+
+    return LinkedInIngestResponse(total_saved=len(saved), profiles=saved)
+
+
+@router.get("/linkedin/candidates", response_model=list[LinkedInProfile])
+def get_linkedin_candidates(
+    open_to_work_only: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Fetch stored LinkedIn profiles.
+    Pass ?open_to_work_only=true to get only candidates actively looking.
+    """
+    if open_to_work_only:
+        records = linkedin_repository.get_open_to_work(db=db)
+    else:
+        records = linkedin_repository.get_all(db=db)
+
+    return [
+        LinkedInProfile(
+            full_name=r.full_name,
+            headline=r.headline,
+            location=r.location,
+            email=r.email,
+            phone=r.phone,
+            profile_url=r.profile_url,
+            about=r.about,
+            skills=r.skills or [],
+            experience=r.experience or [],
+            education=r.education or [],
+            certifications=r.certifications or [],
+            total_experience_years=r.total_experience_years,
+            current_role=r.current_role,
+            current_company=r.current_company,
+            open_to_work=r.open_to_work or False,
+        )
+        for r in records
+    ]
