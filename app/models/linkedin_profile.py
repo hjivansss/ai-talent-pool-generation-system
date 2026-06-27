@@ -1,4 +1,4 @@
-# Stores manually entered LinkedIn profiles in PostgreSQL.
+# Stores LinkedIn profiles in PostgreSQL.
 from sqlalchemy import Column, Integer, String, Text, JSON, Boolean, Float, DateTime
 from sqlalchemy.sql import func
 from app.core.database import Base
