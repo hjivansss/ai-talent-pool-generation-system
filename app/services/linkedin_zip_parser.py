@@ -57,12 +57,18 @@ class LinkedInZipParser:
         if not rows:
             return {}
         row = rows[0]
+
+        email = row.get("Email Address") or None
+        # reject if it doesn't look like an email
+        if email and "@" not in email:
+            email = None
+
         return {
             "full_name": f"{row.get('First Name', '')} {row.get('Last Name', '')}".strip(),
             "headline": row.get("Headline") or None,
             "location": row.get("Geo Location") or row.get("Location") or None,
             "about": row.get("Summary") or None,
-            "email": row.get("Email Address") or None,
+            "email": email,
         }
 
     def _parse_positions(self, rows: list[dict]) -> tuple[list[LinkedInExperience], Optional[str], Optional[str]]:

@@ -16,11 +16,11 @@ class CandidateSearchService:
     # ── GitHub ──────────────────────────────────────────────────────────────────
 
     def build_github_query(self, skills: list[str], location: Optional[str] = None) -> str:
-        skill_query = " OR ".join(skills[:4])
-        query = f"({skill_query}) in:bio repos:>2"
-        if location:
-            query += f" location:{location}"
-        return query
+       skill_query = " OR ".join(skills[:3])
+       query = f"{skill_query} repos:>5 followers:>10"
+       if location:
+          query += f" location:{location}"
+       return query
 
     def _parse_repos(
         self, repos: list[dict]
@@ -94,7 +94,10 @@ class CandidateSearchService:
             )
         except Exception:
             return None
-
+        
+        if profile.get("type") == "Organization":
+            return None
+        
         top_languages = await github_client.get_aggregated_languages(username, repos)
         top_repos, all_topics, total_stars, total_forks = self._parse_repos(repos)
         activity_types, active_days = self._parse_events(events)
