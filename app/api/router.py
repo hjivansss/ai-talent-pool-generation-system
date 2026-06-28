@@ -26,6 +26,8 @@ from app.schemas.candidate_schema import (
 from app.services.candidate_search_service import candidate_search_service
 from app.repositories.linkedin_repository import linkedin_repository
 from app.services.linkedin_zip_parser import linkedin_zip_parser
+from app.schemas.unified_candidate import UnifiedCandidate
+from app.services.normalization_service import normalization_service
 
 router = APIRouter()
 
@@ -220,3 +222,121 @@ def get_linkedin_candidates(
         )
         for r in records
     ]
+
+
+
+# ── Phase 5: Normalization ──────────────────────────────────────────────────────
+
+@router.post("/normalize/github", response_model=list[UnifiedCandidate])
+async def normalize_github(payload: CandidateSearchRequest):
+    """
+    Searches GitHub candidates and returns them as normalized UnifiedCandidates.
+    Ready for Phase 6 semantic matching.
+    """
+    try:
+        _, candidates = await candidate_search_service.search_github_candidates(
+            skills=payload.skills,
+            location=payload.location,
+            limit=payload.limit,
+        )
+        return normalization_service.normalize_github_list(candidates)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/normalize/linkedin", response_model=list[UnifiedCandidate])
+def normalize_linkedin(
+    open_to_work_only: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """
+    Fetches stored LinkedIn profiles and returns them as normalized UnifiedCandidates.
+    Ready for Phase 6 semantic matching.
+    """
+    try:
+        if open_to_work_only:
+            records = linkedin_repository.get_open_to_work(db=db)
+        else:
+            records = linkedin_repository.get_all(db=db)
+
+        profiles = [
+            LinkedInProfile(
+                full_name              = r.full_name,
+                headline               = r.headline,
+                location               = r.location,
+                email                  = r.email,
+                phone                  = r.phone,
+                profile_url            = r.profile_url,
+                about                  = r.about,
+                skills                 = r.skills or [],
+                experience             = r.experience or [],
+                education              = r.education or [],
+                certifications         = r.certifications or [],
+                total_experience_years = r.total_experience_years,
+                current_role           = r.current_role,
+                current_company        = r.current_company,
+                open_to_work           = r.open_to_work or False,
+                source                 = r.source or "linkedin_manual",
+            )
+            for r in records
+        ]
+        return normalization_service.normalize_linkedin_list(profiles)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/normalize/all", response_model=list[UnifiedCandidate])
+async def normalize_all(
+    payload: CandidateSearchRequest,
+    open_to_work_only: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """
+    Fetches GitHub candidates + stored LinkedIn profiles,
+    normalizes both, deduplicates by email/name, returns one unified list.
+    This is the main input for Phase 6 semantic matching.
+    """
+    try:
+        # GitHub
+        _, github_candidates = await candidate_search_service.search_github_candidates(
+            skills=payload.skills,
+            location=payload.location,
+            limit=payload.limit,
+        )
+        unified_github = normalization_service.normalize_github_list(github_candidates)
+
+        # LinkedIn
+        if open_to_work_only:
+            li_records = linkedin_repository.get_open_to_work(db=db)
+        else:
+            li_records = linkedin_repository.get_all(db=db)
+
+        linkedin_profiles = [
+            LinkedInProfile(
+                full_name              = r.full_name,
+                headline               = r.headline,
+                location               = r.location,
+                email                  = r.email,
+                phone                  = r.phone,
+                profile_url            = r.profile_url,
+                about                  = r.about,
+                skills                 = r.skills or [],
+                experience             = r.experience or [],
+                education              = r.education or [],
+                certifications         = r.certifications or [],
+                total_experience_years = r.total_experience_years,
+                current_role           = r.current_role,
+                current_company        = r.current_company,
+                open_to_work           = r.open_to_work or False,
+                source                 = r.source or "linkedin_manual",
+            )
+            for r in li_records
+        ]
+        unified_linkedin = normalization_service.normalize_linkedin_list(linkedin_profiles)
+
+        # Combine + deduplicate
+        all_candidates = unified_github + unified_linkedin
+        return normalization_service.deduplicate(all_candidates)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
