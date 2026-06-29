@@ -6,9 +6,9 @@ from app.core.config import settings
 
 engine = create_engine(
     settings.DATABASE_URL,
-    pool_pre_ping = True
+    pool_pre_ping=True,
+    pool_recycle=300,       # recycle connections every 5 minutes
 )
-
 SessionLocal = sessionmaker(
     autocommit=False ,
     autoflush=False ,
