@@ -29,6 +29,8 @@ class JobDescriptionRepository:
         db.commit()
         db.refresh(job_description)
         return job_description
-
+    
+    def get_by_id(self, db: Session, jd_id: int) -> JobDescription | None:
+        return db.query(JobDescription).filter(JobDescription.id == jd_id).first()
 
 job_description_repository = JobDescriptionRepository()
