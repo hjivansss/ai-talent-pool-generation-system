@@ -28,9 +28,25 @@ from app.repositories.linkedin_repository import linkedin_repository
 from app.services.linkedin_zip_parser import linkedin_zip_parser
 from app.schemas.unified_candidate import UnifiedCandidate
 from app.services.normalization_service import normalization_service
+from app.repositories.talent_pool_repository import talent_pool_repository
+from app.services.matching_service import matching_service
+from app.services.evaluation_service import evaluation_service
+import math
+
+from app.schemas.talent_pool_schema import (
+    TalentPoolRequest,
+    TalentPoolResponse,
+    TalentPoolSummary,
+    CandidateEvaluation,
+)
 
 router = APIRouter()
 
+
+MAX_GITHUB_FETCH = 20   # hard cap — prevents rate limit hammering
+MAX_EVALUATED   = 3    # hard cap — prevents Ollama timeout
+
+#----------------------------------------- APIs--------------------------------------------------------------
 @router.get("/")
 def api_root():
     return{
@@ -340,3 +356,161 @@ async def normalize_all(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Phase 6: Talent Pool Generation ────────────────────────────────────────────
+
+@router.post("/talent-pool/generate", response_model=TalentPoolResponse)
+async def generate_talent_pool(
+    payload: TalentPoolRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Main Phase 6 endpoint. Full pipeline in one call:
+    1. Fetch JD from DB
+    2. Search + normalize GitHub and LinkedIn candidates
+    3. Stage 1: rule-based filter and scoring
+    4. Stage 2: Ollama AI evaluation on filtered candidates
+    5. Rank by overall_fit_score
+    6. Save ranked pool to DB
+    7. Return paginated results
+
+    Subsequent page views use GET /talent-pool/{pool_id} — no re-evaluation.
+    """
+    # Step 1 — fetch JD
+    jd = job_description_repository.get_by_id(db=db, jd_id=payload.jd_id)
+    if not jd:
+        raise HTTPException(status_code=404, detail=f"Job description {payload.jd_id} not found.")
+
+    location = payload.location or jd.location
+
+    try:
+        # Step 2 — fetch and normalize candidates
+        _, github_candidates = await candidate_search_service.search_github_candidates(
+            skills=jd.required_skills or [],
+            location=location,
+            limit=min(payload.limit, MAX_GITHUB_FETCH),
+        )
+        unified_github = normalization_service.normalize_github_list(github_candidates)
+
+        li_records = linkedin_repository.get_all(db)
+        linkedin_profiles = [
+            LinkedInProfile(
+                full_name=r.full_name, headline=r.headline, location=r.location,
+                email=r.email, phone=r.phone, profile_url=r.profile_url,
+                about=r.about, skills=r.skills or [], experience=r.experience or [],
+                education=r.education or [], certifications=r.certifications or [],
+                total_experience_years=r.total_experience_years,
+                current_role=r.current_role, current_company=r.current_company,
+                open_to_work=r.open_to_work or False, source=r.source or "linkedin_manual",
+            )
+            for r in li_records
+        ]
+        unified_linkedin = normalization_service.normalize_linkedin_list(linkedin_profiles)
+        all_candidates = normalization_service.deduplicate(unified_github + unified_linkedin)
+
+        # Step 3 — Stage 1 filter
+        filtered = matching_service.filter_candidates(
+            candidates=all_candidates,
+            jd=jd,
+            min_score=payload.min_score,
+        )
+
+        # Step 4 — Stage 2 Ollama evaluation
+        evaluated = await evaluation_service.evaluate_all(
+            filtered_candidates=filtered,
+            jd=jd,
+            max_evaluated=MAX_EVALUATED,
+        )
+
+        # Step 5 — Save to DB
+        pool = talent_pool_repository.create(
+            db=db,
+            jd_id=payload.jd_id,
+            job_role=jd.job_role,
+            candidates=evaluated,
+            filter_params={
+                "location": location,
+                "limit": payload.limit,
+                "min_score": payload.min_score,
+            },
+        )
+
+        # Step 6 — Paginate and return
+        total_pages = max(1, math.ceil(len(evaluated) / payload.page_size))
+        start = (payload.page - 1) * payload.page_size
+        end   = start + payload.page_size
+        page_candidates = evaluated[start:end]
+
+        return TalentPoolResponse(
+            pool_id           = pool.id,
+            jd_id             = payload.jd_id,
+            job_role          = jd.job_role,
+            generated_at      = pool.generated_at,
+            total_candidates  = len(evaluated),
+            page              = payload.page,
+            page_size         = payload.page_size,
+            total_pages       = total_pages,
+            candidates        = page_candidates,
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/talent-pool/{pool_id}", response_model=TalentPoolResponse)
+def get_talent_pool(
+    pool_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    """
+    Fetch a previously generated talent pool by pool_id.
+    Paginated — no re-evaluation, reads directly from DB.
+    Use this for page 2, page 3 etc after initial generation.
+    """
+    pool = talent_pool_repository.get_by_id(db=db, pool_id=pool_id)
+    if not pool:
+        raise HTTPException(status_code=404, detail=f"Talent pool {pool_id} not found.")
+
+    all_candidates = [CandidateEvaluation(**c) for c in pool.candidates]
+    total_pages = max(1, math.ceil(len(all_candidates) / page_size))
+    start = (page - 1) * page_size
+    end   = start + page_size
+
+    return TalentPoolResponse(
+        pool_id          = pool.id,
+        jd_id            = pool.jd_id,
+        job_role         = pool.job_role,
+        generated_at     = pool.generated_at,
+        total_candidates = pool.total_candidates,
+        page             = page,
+        page_size        = page_size,
+        total_pages      = total_pages,
+        candidates       = all_candidates[start:end],
+    )
+
+
+@router.get("/talent-pool/jd/{jd_id}/summary", response_model=list[TalentPoolSummary])
+def get_talent_pool_summaries(jd_id: int, db: Session = Depends(get_db)):
+    """
+    Lists all talent pools generated for a JD, newest first.
+    Use this to pick which pool_id to view, or to compare runs.
+    """
+    pools = talent_pool_repository.get_by_jd_id(db=db, jd_id=jd_id)
+    if not pools:
+        raise HTTPException(status_code=404, detail=f"No talent pools found for JD {jd_id}.")
+    return [
+        TalentPoolSummary(
+            pool_id          = p.id,
+            jd_id            = p.jd_id,
+            job_role         = p.job_role,
+            generated_at     = p.generated_at,
+            total_candidates = p.total_candidates,
+            tier1_count      = p.tier1_count,
+            tier2_count      = p.tier2_count,
+            tier3_count      = p.tier3_count,
+        )
+        for p in pools
+    ]
