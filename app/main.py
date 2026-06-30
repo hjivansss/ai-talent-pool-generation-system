@@ -1,11 +1,13 @@
 from fastapi import FastAPI
 
+
 from app.core.config import settings
 from app.api.router import router as api_router 
 
 from app.core.database import Base, engine
 from app.models.job_description import JobDescription
 from app.models.linkedin_profile import LinkedInProfileModel
+from app.models.resume import ResumeModel
 
 Base.metadata.create_all(bind=engine)
 
@@ -31,6 +33,5 @@ def root():
         "app_name": settings.APP_NAME,
         "version": settings.APP_VERSION,
         "environment": settings.ENVIRONMENT,
+       
     }
-
-
