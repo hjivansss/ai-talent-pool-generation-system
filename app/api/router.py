@@ -409,8 +409,38 @@ async def generate_talent_pool(
             )
             for r in li_records
         ]
+        
         unified_linkedin = normalization_service.normalize_linkedin_list(linkedin_profiles)
-        all_candidates = normalization_service.deduplicate(unified_github + unified_linkedin)
+
+        # Step 2b — fetch and normalize resume candidates
+        resume_records = resume_repository.get_all(db)
+        resume_profiles = [
+            LinkedInProfile(
+                full_name=r.full_name,
+                headline=r.headline,
+                location=r.location,
+                email=r.email,
+                phone=r.phone,
+                profile_url=r.profile_url,
+                about=r.about,
+                skills=r.skills or [],
+                experience=r.experience or [],
+                education=r.education or [],
+                certifications=r.certifications or [],
+                total_experience_years=r.total_experience_years,
+                current_role=r.current_role,
+                current_company=r.current_company,
+                open_to_work=r.open_to_work or False,
+                source=r.source or "resume",
+            )
+            for r in resume_records
+        ]
+        unified_resume = normalization_service.normalize_linkedin_list(resume_profiles)
+
+        # combine all three sources and deduplicate
+        all_candidates = normalization_service.deduplicate(
+            unified_github + unified_linkedin + unified_resume
+        )
 
         # Step 3 — Stage 1 filter
         filtered = matching_service.filter_candidates(
