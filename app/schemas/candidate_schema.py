@@ -119,3 +119,7 @@ class LinkedInIngestResponse(BaseModel):
 class LinkedInZipUploadResponse(BaseModel):
     message: str
     profile: LinkedInProfile
+
+class ResumeUploadResponse(BaseModel):
+    message: str
+    profile: LinkedInProfile   # resume parses into same structure as LinkedIn
