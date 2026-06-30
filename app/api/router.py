@@ -21,17 +21,20 @@ from app.schemas.candidate_schema import (
     LinkedInIngestRequest,
     LinkedInIngestResponse,
     LinkedInZipUploadResponse,
+     ResumeUploadResponse,
 )
 
 from app.services.candidate_search_service import candidate_search_service
 from app.repositories.linkedin_repository import linkedin_repository
 from app.services.linkedin_zip_parser import linkedin_zip_parser
+from app.services.resume_parser import resume_parser
 from app.schemas.unified_candidate import UnifiedCandidate
 from app.services.normalization_service import normalization_service
 from app.repositories.talent_pool_repository import talent_pool_repository
 from app.services.matching_service import matching_service
 from app.services.evaluation_service import evaluation_service
 import math
+from app.repositories.resume_repository import resume_repository
 
 from app.schemas.talent_pool_schema import (
     TalentPoolRequest,
@@ -513,4 +516,70 @@ def get_talent_pool_summaries(jd_id: int, db: Session = Depends(get_db)):
             tier3_count      = p.tier3_count,
         )
         for p in pools
+    ]
+
+# ── Phase 7: Resume Upload ──────────────────────────────────────────────────────
+@router.post("/resume/upload", response_model=ResumeUploadResponse)
+async def upload_resume(
+    file: UploadFile = File(...),
+    open_to_work: bool = Query(True),
+    db: Session = Depends(get_db),
+):
+    """
+    Candidate uploads their resume as PDF or DOCX.
+    File is parsed in memory via pdfplumber/python-docx + Ollama.
+    Structured profile saved to resumes table.
+    Flows into talent pool generation automatically.
+    """
+    allowed = [".pdf", ".docx", ".doc"]
+    if not any(file.filename.endswith(ext) for ext in allowed):
+        raise HTTPException(status_code=400, detail="Only PDF and DOCX files accepted.")
+
+    file_bytes = await file.read()
+
+    if len(file_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large. Maximum 10MB.")
+
+    try:
+        profile = await resume_parser.parse(file_bytes, file.filename)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse resume: {str(e)}")
+
+    profile.open_to_work = open_to_work
+
+    try:
+        resume_repository.create(db=db, profile=profile, file_name=file.filename)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save resume: {str(e)}")
+
+    return ResumeUploadResponse(
+        message=f"Resume for '{profile.full_name}' parsed and saved successfully.",
+        profile=profile,
+    )
+
+
+@router.get("/resume/candidates", response_model=list[LinkedInProfile])
+def get_resume_candidates(db: Session = Depends(get_db)):
+    """Fetch all stored resume profiles."""
+    records = resume_repository.get_all(db=db)
+    return [
+        LinkedInProfile(
+            full_name=r.full_name,
+            headline=r.headline,
+            location=r.location,
+            email=r.email,
+            phone=r.phone,
+            skills=r.skills or [],
+            experience=r.experience or [],
+            education=r.education or [],
+            certifications=r.certifications or [],
+            total_experience_years=r.total_experience_years,
+            current_role=r.current_role,
+            current_company=r.current_company,
+            open_to_work=r.open_to_work or True,
+            source="resume",
+        )
+        for r in records
     ]
