@@ -14,6 +14,10 @@ class TalentPoolRequest(BaseModel):
     min_score: float = 0.3              # Stage 1 filter threshold (0.0 to 1.0)
     page: int = 1                       # pagination — which page to return
     page_size: int = 10                 # candidates per page
+    # Optional GitHub search overrides
+    github_language: Optional[str] = None   # e.g. "python", "kotlin"
+    min_followers: Optional[int] = None     # e.g. 50 for senior roles
+    min_repos: Optional[int] = None         # e.g. 10 for active developers
 
 
 class TalentPoolViewRequest(BaseModel):
@@ -53,6 +57,7 @@ class CandidateEvaluation(BaseModel):
     skill_match_score: float = 0.0      # 0.0 to 1.0
     experience_match_score: float = 0.0
     tools_match_score: float = 0.0
+    semantic_similarity: float = 0.0       # embedding similarity score
     matched_skills: List[str] = []
     skill_gaps: List[SkillGap] = []
 
