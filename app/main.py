@@ -1,15 +1,24 @@
 from fastapi import FastAPI
 
-
 from app.core.config import settings
 from app.api.router import router as api_router 
 
-from app.core.database import Base, engine
+from app.core.database import Base, engine , SessionLocal
 from app.models.job_description import JobDescription
 from app.models.linkedin_profile import LinkedInProfileModel
 from app.models.resume import ResumeModel
+from app.models.talent_pool import TalentPool
+from app.services import vector_store
+
 
 Base.metadata.create_all(bind=engine)
+
+# Ensure pgvector embedding tables exist
+db = SessionLocal()
+try:
+    vector_store.ensure_tables(db)
+finally:
+    db.close()
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -23,8 +32,6 @@ app.include_router(
     prefix="/api",
     tags=["API"]
 )
-
-
 
 @app.get("/")
 def root():
