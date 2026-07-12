@@ -1,3 +1,5 @@
+import datetime
+
 from pydantic import BaseModel, Field
 from typing import List , Optional
 
@@ -34,6 +36,17 @@ class SavedJDResponse(BaseModel):
     key_responsibilities: List[str] = []
     tools_and_platforms: List[str] = []
     location: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+#For listing JDs from db in the frontend
+class JDListItem(BaseModel):
+    id: int
+    job_role: str
+    seniority_level: Optional[str] = None
+    location: Optional[str] = None
+    created_at: datetime
 
     class Config:
         from_attributes = True
