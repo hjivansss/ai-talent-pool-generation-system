@@ -1,68 +1,96 @@
-#builds search query and converts GitHub API data into clean candidate objects.
+# Builds GitHub search query and converts GitHub API data into clean candidate objects.
 import asyncio
 from datetime import datetime, timezone
 from typing import Optional
 
 from app.integrations.github_client import github_client
-from app.schemas.candidate_schema import (
-    GitHubCandidateProfile,
-    GitHubRepoSummary,
-    LinkedInProfile,
-)
+from app.schemas.candidate_schema import GitHubCandidateProfile, GitHubRepoSummary, LinkedInProfile
+from app.models.job_description import JobDescription
+
+
+# Maps common skill names to GitHub language qualifiers
+LANGUAGE_MAP = {
+    "python": "python", "javascript": "javascript", "typescript": "typescript",
+    "kotlin": "kotlin", "swift": "swift", "go": "go", "golang": "go",
+    "java": "java", "rust": "rust", "ruby": "ruby", "php": "php",
+    "dart": "dart", "flutter": "dart", "c++": "c++", "c#": "c#",
+    "scala": "scala", "r": "r", "elixir": "elixir",
+}
 
 
 class CandidateSearchService:
 
-    # ── GitHub ──────────────────────────────────────────────────────────────────
+    def build_github_query(
+        self,
+        skills: list[str],
+        location: Optional[str] = None,
+        seniority_level: Optional[str] = None,
+        github_language: Optional[str] = None,
+        min_followers: Optional[int] = None,
+        min_repos: Optional[int] = None,
+    ) -> str:
+        """
+        Builds an optimized GitHub search query using JD fields.
+        - Detects primary language from skills → adds language: filter
+        - Adjusts follower threshold based on seniority
+        - Accepts optional recruiter overrides for language/followers/repos
+        """
+        skill_query = " OR ".join(skills[:3])
 
-    def build_github_query(self, skills: list[str], location: Optional[str] = None) -> str:
-       skill_query = " OR ".join(skills[:3])
-       query = f"{skill_query} repos:>5 followers:>10"
-       if location:
-          query += f" location:{location}"
-       return query
+        # Detect language from skills if not explicitly provided
+        language = github_language
+        if not language:
+            for skill in skills:
+                detected = LANGUAGE_MAP.get(skill.lower())
+                if detected:
+                    language = detected
+                    break
 
-    def _parse_repos(
-        self, repos: list[dict]
-    ) -> tuple[list[GitHubRepoSummary], list[str], int, int]:
-        all_topics: list[str] = []
-        total_stars = 0
-        total_forks = 0
-        scored: list[tuple[int, GitHubRepoSummary]] = []
+        # Seniority-based follower threshold
+        if min_followers is not None:
+            followers = min_followers
+        elif seniority_level in ("senior", "lead"):
+            followers = 50
+        elif seniority_level == "mid":
+            followers = 20
+        else:
+            followers = 10
+
+        repos = min_repos or 5
+
+        query = f"{skill_query} followers:>{followers} repos:>{repos}"
+        if language:
+            query += f" language:{language}"
+        if location:
+            query += f" location:{location}"
+
+        return query
+
+    def _parse_repos(self, repos: list[dict]) -> tuple[list[GitHubRepoSummary], list[str], int, int]:
+        all_topics, scored = [], []
+        total_stars = total_forks = 0
 
         for repo in repos:
-            stars   = repo.get("stargazers_count", 0)
-            forks   = repo.get("forks_count", 0)
-            topics  = repo.get("topics", [])
-            is_fork = repo.get("fork", False)
-
+            stars, forks = repo.get("stargazers_count", 0), repo.get("forks_count", 0)
+            topics, is_fork = repo.get("topics", []), repo.get("fork", False)
             total_stars += stars
             total_forks += forks
             all_topics.extend(topics)
-
             summary = GitHubRepoSummary(
-                name=repo["name"],
-                description=repo.get("description"),
-                url=repo.get("html_url", ""),
-                stars=stars,
-                forks=forks,
-                primary_language=repo.get("language"),
-                topics=topics,
-                is_fork=is_fork,
-                last_pushed=repo.get("pushed_at"),
+                name=repo["name"], description=repo.get("description"),
+                url=repo.get("html_url", ""), stars=stars, forks=forks,
+                primary_language=repo.get("language"), topics=topics,
+                is_fork=is_fork, last_pushed=repo.get("pushed_at"),
             )
             if not is_fork:
                 scored.append((stars, summary))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        unique_topics = list(dict.fromkeys(all_topics))
-        return [s for _, s in scored[:5]], unique_topics, total_stars, total_forks
+        return [s for _, s in scored[:5]], list(dict.fromkeys(all_topics)), total_stars, total_forks
 
     def _parse_events(self, events: list[dict]) -> tuple[list[str], int]:
         now = datetime.now(timezone.utc)
-        types_seen: set[str] = set()
-        active_dates: set[str] = set()
-
+        types_seen, active_dates = set(), set()
         for event in events:
             types_seen.add(event.get("type", ""))
             created = event.get("created_at", "")
@@ -73,7 +101,6 @@ class CandidateSearchService:
                         active_dates.add(created[:10])
                 except Exception:
                     pass
-
         return list(types_seen), len(active_dates)
 
     def _account_age(self, created_at: Optional[str]) -> Optional[float]:
@@ -94,10 +121,10 @@ class CandidateSearchService:
             )
         except Exception:
             return None
-        
+
         if profile.get("type") == "Organization":
             return None
-        
+
         top_languages = await github_client.get_aggregated_languages(username, repos)
         top_repos, all_topics, total_stars, total_forks = self._parse_repos(repos)
         activity_types, active_days = self._parse_events(events)
@@ -132,22 +159,26 @@ class CandidateSearchService:
         skills: list[str],
         location: Optional[str] = None,
         limit: int = 10,
+        seniority_level: Optional[str] = None,
+        github_language: Optional[str] = None,
+        min_followers: Optional[int] = None,
+        min_repos: Optional[int] = None,
     ) -> tuple[str, list[GitHubCandidateProfile]]:
-        query = self.build_github_query(skills, location)
+        query = self.build_github_query(
+            skills=skills, location=location,
+            seniority_level=seniority_level,
+            github_language=github_language,
+            min_followers=min_followers,
+            min_repos=min_repos,
+        )
+        print(f"[GitHubSearch] query: {query!r}")
         users = await github_client.search_users(query=query, limit=limit)
+        print(f"[GitHubSearch] search/users returned {len(users)} candidate logins")
         tasks = [self._build_rich_profile(u["login"]) for u in users if u.get("login")]
         results = await asyncio.gather(*tasks)
-        return query, [r for r in results if r is not None]
-
-    # ── LinkedIn ────────────────────────────────────────────────────────────────
-
-    def ingest_linkedin_profiles(self, profiles: list[LinkedInProfile]) -> list[LinkedInProfile]:
-        """
-        Validates and returns LinkedIn profiles.
-        Pydantic already validated them at the endpoint level —
-        this is where DB persistence will be added in Phase 5.
-        """
-        return profiles
-
+        profiles = [r for r in results if r is not None]
+        print(f"[GitHubSearch] {len(profiles)}/{len(users)} profiles built successfully "
+              f"({len(users) - len(profiles)} dropped — org accounts or fetch failures)")
+        return query, profiles
 
 candidate_search_service = CandidateSearchService()
