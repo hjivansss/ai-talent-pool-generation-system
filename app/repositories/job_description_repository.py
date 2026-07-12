@@ -32,5 +32,13 @@ class JobDescriptionRepository:
     
     def get_by_id(self, db: Session, jd_id: int) -> JobDescription | None:
         return db.query(JobDescription).filter(JobDescription.id == jd_id).first()
+    
+    def get_all(self, db: Session, limit: int = 100) -> list[JobDescription]:
+        return (
+            db.query(JobDescription)
+            .order_by(JobDescription.created_at.desc())
+            .limit(limit)
+            .all()
+        )
 
 job_description_repository = JobDescriptionRepository()
