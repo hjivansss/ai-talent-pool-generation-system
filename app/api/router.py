@@ -4,6 +4,7 @@ from app.integrations.ollama_client import ollama_client
 
 from app.services.jd_extraction_service import jd_extraction_service
 from app.schemas.jd_schema import (
+    JDListItem,
     JobDescriptionRequest, 
     ExtractedJDResponse , 
     SavedJDResponse)
@@ -454,3 +455,7 @@ def get_talent_pool_summaries(jd_id: int, db: Session = Depends(get_db)):
         )
         for p in pools
     ]
+
+@router.get("/jd", response_model=list[JDListItem])
+def list_job_descriptions(db: Session = Depends(get_db)):
+    return job_description_repository.get_all(db)
