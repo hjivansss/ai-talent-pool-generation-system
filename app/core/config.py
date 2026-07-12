@@ -12,7 +12,11 @@ class Settings(BaseSettings):
     DATABASE_URL: str 
     
     GITHUB_TOKEN: str | None = None
-    
+
+    #calling enabled for CORS in the frontend, so that the frontend can make requests to the backend 
+    # without being blocked by the browser's same-origin policy.
+    ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8"

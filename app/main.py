@@ -9,7 +9,7 @@ from app.models.linkedin_profile import LinkedInProfileModel
 from app.models.resume import ResumeModel
 from app.models.talent_pool import TalentPool
 from app.services import vector_store
-
+from fastapi.middleware.cors import CORSMiddleware
 
 Base.metadata.create_all(bind=engine)
 
@@ -24,6 +24,14 @@ app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description="AI-powered talent pool search and candidate ranking backend",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 #Adding the routes from app/api/ v1/router.py for better organization 
