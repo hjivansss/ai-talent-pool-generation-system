@@ -302,7 +302,7 @@ async def generate_talent_pool(payload: TalentPoolRequest, db: Session = Depends
     jd = job_description_repository.get_by_id(db=db, jd_id=payload.jd_id)
     if not jd:
         raise HTTPException(status_code=404, detail=f"JD {payload.jd_id} not found.")
-
+    db.expunge(jd)
     location = payload.location or jd.location
 
     try:
