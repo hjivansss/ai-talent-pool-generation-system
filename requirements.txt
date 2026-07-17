@@ -14,3 +14,4 @@ httpx
 python-multipart
 pdfplumber
 python-docx
+pgvector
