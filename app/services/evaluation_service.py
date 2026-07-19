@@ -3,6 +3,7 @@
 
 import json
 import re
+import time
 from app.integrations.ollama_client import ollama_client
 from app.schemas.unified_candidate import UnifiedCandidate
 from app.models.job_description import JobDescription
@@ -17,7 +18,6 @@ Seniority: {seniority_level}
 Required Skills: {required_skills}
 Nice to Have: {nice_to_have_skills}
 Experience Required: {experience_required}
-Key Responsibilities: {key_responsibilities}
 Tools and Platforms: {tools_and_platforms}
 Domain: {domain}
 
@@ -26,11 +26,9 @@ Name: {name}
 Current Role: {current_role} at {current_company}
 Experience: {experience_years} years | Seniority: {seniority_inferred}
 Skills: {skills}
-Top Languages (bytes written): {top_languages}
+Top Languages: {top_languages}
 Top Projects: {top_projects}
-Active Days Last Month: {active_days}
 Certifications: {certifications}
-Sources: {sources}
 
 Stage 1 Analysis:
 - Skill Match: {skill_match_score} | Semantic Similarity: {semantic_similarity}
@@ -43,27 +41,26 @@ Return ONLY a JSON object. No markdown. No explanation.
   "overall_fit_score": <integer 0-100>,
   "recommendation": "<Strong Match|Good Match|Partial Match|Not Recommended>",
   "strengths": ["<strength 1>", "<strength 2>", "<strength 3>"],
-  "justification": "<2-3 sentence paragraph explaining the overall fit>",
-  "skill_gap_analysis": "<1-2 sentences on missing skills and criticality>"
+  "justification": "<ONE sentence, max 30 words, explaining the overall fit>",
+  "skill_gap_analysis": "<ONE sentence, max 25 words, on missing skills and criticality>"
 }}
 
 Scoring: 75-100 Strong Match | 50-74 Good Match | 30-49 Partial Match | 0-29 Not Recommended
-Use the full 0-100 range. Give different scores to different candidates. Be decisive and specific."""
+Be concise and decisive. Do not restate the job requirements back."""
 
 
 def _build_prompt(candidate: UnifiedCandidate, jd: JobDescription, stage1: dict) -> str:
     projects = [
-        f"{p.name} ({p.stars}⭐) — {p.description or 'no description'}"
-        for p in candidate.top_projects[:3]
+        f"{p.name} ({p.stars}⭐)"
+        for p in candidate.top_projects[:2]
     ]
-    missing = [g.skill for g in stage1.get("skill_gaps", [])]
+    missing = [g.skill for g in stage1.get("skill_gaps", [])][:6]
     return EVALUATION_PROMPT.format(
         job_role=jd.job_role,
         seniority_level=jd.seniority_level or "not specified",
         required_skills=", ".join(jd.required_skills or []),
         nice_to_have_skills=", ".join(jd.nice_to_have_skills or []),
         experience_required=jd.experience_required or "not specified",
-        key_responsibilities="; ".join((jd.key_responsibilities or [])[:2]),
         tools_and_platforms=", ".join(jd.tools_and_platforms or []),
         domain=jd.domain or "not specified",
         name=candidate.name or "Unknown",
@@ -71,15 +68,13 @@ def _build_prompt(candidate: UnifiedCandidate, jd: JobDescription, stage1: dict)
         current_company=candidate.current_company or "not provided",
         experience_years=candidate.total_experience_years or "not provided",
         seniority_inferred=candidate.seniority_inferred or "unknown",
-        skills=", ".join(candidate.skills[:15]),
-        top_languages=str(dict(list(candidate.top_languages.items())[:5])),
+        skills=", ".join(candidate.skills[:10]),
+        top_languages=str(dict(list(candidate.top_languages.items())[:3])),
         top_projects="; ".join(projects) if projects else "none",
-        active_days=candidate.active_days_last_month,
-        certifications=", ".join(candidate.certifications) if candidate.certifications else "none",
-        sources=", ".join(candidate.sources),
+        certifications=", ".join(candidate.certifications[:3]) if candidate.certifications else "none",
         skill_match_score=stage1.get("skill_match_score", 0),
         semantic_similarity=stage1.get("semantic_similarity", 0),
-        matched_skills=", ".join(stage1.get("matched_skills", [])),
+        matched_skills=", ".join(stage1.get("matched_skills", [])[:8]),
         missing_skills=", ".join(missing) if missing else "none",
     )
 
@@ -96,6 +91,49 @@ def _assign_tier(score: float) -> int:
     return 3
 
 
+def _template_evaluation(stage1: dict) -> dict:
+    """
+    Fast, Ollama-free evaluation for candidates whose Stage-1 composite score
+    is below settings.LLM_SCORE_THRESHOLD. Built directly from the rule-based
+    skill match we already computed — no extra network call, no hallucination
+    risk, and arguably more honest than an LLM paragraph restating the same
+    skill gaps in prose (see conversation 2026-07-19 for the measured example).
+    """
+    composite = stage1.get("composite_score", 0)
+    score = round(composite * 100)
+    matched = stage1.get("matched_skills", [])
+    gaps = [g.skill for g in stage1.get("skill_gaps", [])]
+
+    if score >= 75:
+        recommendation = "Strong Match"
+    elif score >= 50:
+        recommendation = "Good Match"
+    elif score >= 30:
+        recommendation = "Partial Match"
+    else:
+        recommendation = "Not Recommended"
+
+    matched_preview = ", ".join(matched[:5]) + ("…" if len(matched) > 5 else "")
+    gaps_preview = ", ".join(gaps[:5]) + ("…" if len(gaps) > 5 else "")
+
+    justification = (
+        f"Matches {len(matched)} of the required skills"
+        + (f" ({matched_preview})" if matched else "")
+        + f". Stage-1 composite score: {composite:.2f}."
+    )
+    skill_gap_analysis = (
+        f"Missing: {gaps_preview}." if gaps else "No critical skill gaps identified."
+    )
+
+    return {
+        "overall_fit_score": score,
+        "recommendation": recommendation,
+        "strengths": matched[:3],
+        "justification": justification,
+        "skill_gap_analysis": skill_gap_analysis,
+    }
+
+
 class EvaluationService:
 
     async def evaluate_candidate(
@@ -103,30 +141,35 @@ class EvaluationService:
         candidate: UnifiedCandidate,
         jd: JobDescription,
         stage1: dict,
+        use_llm: bool = True,
     ) -> CandidateEvaluation:
-        prompt = _build_prompt(candidate, jd, stage1)
-        try:
-            raw = await ollama_client.generate(prompt, temperature=0.2)
-            data = json.loads(_clean_json(raw))
-        except Exception as e:
-            print(f"[Evaluation] Ollama failed for {candidate.name}: {e}")
-            composite = stage1.get("composite_score", 0)
-            data = {
-                "overall_fit_score": round(composite * 100),
-                "recommendation": "Partial Match",
-                "strengths": [],
-                "justification": "AI evaluation unavailable. Score based on skill matching only.",
-                "skill_gap_analysis": "Unable to generate analysis.",
-            }
+        if not use_llm:
+            # Below LLM_SCORE_THRESHOLD — skip Ollama entirely (see _template_evaluation).
+            data = _template_evaluation(stage1)
+        else:
+            prompt = _build_prompt(candidate, jd, stage1)
+            prompt_chars = len(prompt)
+            call_start = time.perf_counter()
+            try:
+                raw = await ollama_client.generate(prompt, temperature=0.2)
+                data = json.loads(_clean_json(raw))
+                elapsed = time.perf_counter() - call_start
+                print(f"[TIMING]   Ollama eval — {candidate.name!r}: {elapsed:.2f}s "
+                      f"(prompt={prompt_chars} chars, response={len(raw)} chars)")
+            except Exception as e:
+                elapsed = time.perf_counter() - call_start
+                print(f"[TIMING]   Ollama eval — {candidate.name!r}: FAILED after {elapsed:.2f}s")
+                print(f"[Evaluation] Ollama failed for {candidate.name}: {e}")
+                data = _template_evaluation(stage1)
 
         score = float(data.get("overall_fit_score", 0))
         return CandidateEvaluation(
             name=candidate.name, location=candidate.location,
             email=candidate.email, github_url=candidate.github_url,
             linkedin_url=candidate.linkedin_url, portfolio_url=candidate.portfolio_url,
-            sources=candidate.sources, skills=candidate.skills[:15],
+            sources=candidate.sources, skills=candidate.skills[:10],
             top_languages=candidate.top_languages,
-            top_projects=[p.model_dump() for p in candidate.top_projects[:3]],
+            top_projects=[p.model_dump() for p in candidate.top_projects[:2]],
             current_role=candidate.current_role, current_company=candidate.current_company,
             total_experience_years=candidate.total_experience_years,
             seniority_inferred=candidate.seniority_inferred,
@@ -149,10 +192,18 @@ class EvaluationService:
         filtered: list[tuple[UnifiedCandidate, dict]],
         jd: JobDescription,
         max_evaluated: int = 5,
+        llm_score_threshold: float = 0.35,
     ) -> list[CandidateEvaluation]:
+        subset = filtered[:min(len(filtered), max_evaluated)]
         results = []
-        for candidate, stage1 in filtered[:min(len(filtered), max_evaluated)]:
-            results.append(await self.evaluate_candidate(candidate, jd, stage1))
+        llm_count = template_count = 0
+        for candidate, stage1 in subset:
+            use_llm = stage1.get("composite_score", 0) >= llm_score_threshold
+            llm_count += use_llm
+            template_count += not use_llm
+            results.append(await self.evaluate_candidate(candidate, jd, stage1, use_llm=use_llm))
+        print(f"[TIMING] Stage 2 breakdown: {llm_count} sent to Ollama, "
+              f"{template_count} templated (composite < {llm_score_threshold}, no Ollama call)")
         results.sort(key=lambda x: x.overall_fit_score, reverse=True)
         return results
 

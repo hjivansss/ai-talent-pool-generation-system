@@ -45,12 +45,15 @@ from app.schemas.talent_pool_schema import (
 )
 from app.services import embedding_service, vector_store
 from app.services.embedding_service import embedding_service
+from app.core.timing import timed, Timer
+from app.core.config import settings
 
 router = APIRouter()
 
 
 MAX_GITHUB_FETCH = 20   # hard cap — prevents rate limit hammering
-MAX_EVALUATED   = 7   # hard cap — prevents Ollama timeout
+MAX_EVALUATED    = settings.MAX_EVALUATED       # candidates considered for final pool
+LLM_SCORE_THRESHOLD = settings.LLM_SCORE_THRESHOLD  # below this, skip Ollama — see evaluation_service
 
 # ── Helper — eliminates repeated LinkedIn profile reconstruction ────────────────
 
@@ -175,7 +178,7 @@ async def upload_linkedin_zip(
 
     profile.open_to_work = open_to_work
     try:
-        record = linkedin_repository.create(db=db, profile=profile)
+        record = linkedin_repository.create_or_update(db=db, profile=profile)
         unified = normalization_service.from_linkedin(profile)
         vector = await embedding_service.embed(embedding_service.build_candidate_text(unified))
         if vector:
@@ -198,6 +201,7 @@ def get_linkedin_candidates(open_to_work_only: bool = Query(False), db: Session 
 
 # ── Resume ──────────────────────────────────────────────────────────────────────
 
+
 @router.post("/resume/upload", response_model=ResumeUploadResponse)
 async def upload_resume(
     file: UploadFile = File(...),
@@ -218,7 +222,7 @@ async def upload_resume(
 
     profile.open_to_work = open_to_work
     try:
-        record = resume_repository.create(db=db, profile=profile, file_name=file.filename)
+        record, is_new = resume_repository.create_or_update(db=db, profile=profile, file_name=file.filename)
         unified = normalization_service.from_linkedin(profile)
         vector = await embedding_service.embed(embedding_service.build_candidate_text(unified))
         if vector:
@@ -228,7 +232,11 @@ async def upload_resume(
         raise HTTPException(status_code=500, detail=f"Failed to save resume: {e}")
 
     return ResumeUploadResponse(
-        message=f"Resume for '{profile.full_name}' parsed and saved successfully.",
+        message=(
+            f"Resume for '{profile.full_name}' saved successfully."
+            if is_new else
+            f"Resume for '{profile.full_name}' already existed — updated existing record."
+        ),
         profile=profile,
     )
 
@@ -302,39 +310,59 @@ async def generate_talent_pool(payload: TalentPoolRequest, db: Session = Depends
     jd = job_description_repository.get_by_id(db=db, jd_id=payload.jd_id)
     if not jd:
         raise HTTPException(status_code=404, detail=f"JD {payload.jd_id} not found.")
-
+    db.expunge(jd)
     location = payload.location or jd.location
+
+    pipeline_timer = Timer(f"[TALENT-POOL TOTAL] jd_id={payload.jd_id}")
 
     try:
         # Step 1 — get JD embedding (from cache or compute now)
-        jd_vector = vector_store.get_jd_embedding(db, payload.jd_id)
-        if not jd_vector:
-            jd_vector = await embedding_service.embed(embedding_service.build_jd_text(jd))
+        with timed("Step 1 — JD embedding (cache lookup / compute)"):
+            jd_vector = vector_store.get_jd_embedding(db, payload.jd_id)
+            if not jd_vector:
+                jd_vector = await embedding_service.embed(embedding_service.build_jd_text(jd))
+                if jd_vector:
+                    vector_store.ensure_tables(db)
+                    vector_store.upsert_jd_embedding(db, payload.jd_id, jd_vector)
+
+        # Step 2 — compute similarity scores for LinkedIn + Resume candidates.
+        # NOTE (2026-07-19 fix): this used to be a HARD top_k=20 pre-filter that
+        # dropped any candidate not in the top 20 by cosine similarity *before*
+        # Stage 1 rule-based scoring ever ran — meaning a candidate with a
+        # perfect skill match but slightly different embedded phrasing could be
+        # silently excluded and never get a justification. Stage 1 scoring is
+        # cheap, in-memory, pure Python (Step 6 measured at 0.00-0.05s even for
+        # 16+ candidates) — there's no latency reason to pre-filter before it.
+        # Similarity is now used only as a scoring signal (15% weight, see
+        # matching_service.score), applied to the full candidate pool.
+        with timed("Step 2 — Vector similarity scoring (DB)"):
+            similarity_map: dict[str, float] = {}
             if jd_vector:
-                vector_store.ensure_tables(db)
-                vector_store.upsert_jd_embedding(db, payload.jd_id, jd_vector)
+                similar = vector_store.find_similar_candidates(db, jd_vector, top_k=1000)
+                for ctype, cid, sim in similar:
+                    similarity_map[f"{ctype}:{cid}"] = sim
 
-        # Step 2 — vector pre-filter for LinkedIn + Resume candidates
-        similarity_map: dict[str, float] = {}
-        if jd_vector:
-            similar = vector_store.find_similar_candidates(db, jd_vector, top_k=20)
-            similar_li_ids  = {cid for ctype, cid, _ in similar if ctype == "linkedin"}
-            similar_res_ids = {cid for ctype, cid, _ in similar if ctype == "resume"}
-            for ctype, cid, sim in similar:
-                similarity_map[f"{ctype}:{cid}"] = sim
-        else:
-            similar_li_ids  = None   # None = load all
-            similar_res_ids = None
+        # Step 3 — load LinkedIn + Resume from DB (no pre-filter), per source toggle
+        with timed("Step 3 — Load LinkedIn + Resume records (DB)"):
+            li_records = linkedin_repository.get_all(db) if payload.include_linkedin else []
+            resume_records = resume_repository.get_all(db) if payload.include_resume else []
 
-        # Step 3 — load LinkedIn + Resume from DB (pre-filtered or all)
-        li_records = linkedin_repository.get_all(db)
-        if similar_li_ids is not None:
-            li_records = [r for r in li_records if r.id in similar_li_ids]
+        # Fetch prior pools' candidate identities now, while `db` is still open,
+        # for the cross-regeneration exclusion in Step 5.5 below.
+        prior_seen_emails: set[str] = set()
+        prior_seen_names: set[str] = set()
+        if payload.exclude_previously_shown:
+            with timed("Step 3.5 — Load prior pool identities (DB)"):
+                prior_pools = talent_pool_repository.get_by_jd_id(db, payload.jd_id)
+                prior_candidates = [c for pool in prior_pools for c in (pool.candidates or [])]
+                prior_seen_emails, prior_seen_names = normalization_service.seen_identities_from_prior_pools(
+                    prior_candidates
+                )
+            print(f"[TIMING] prior pools for jd_id={payload.jd_id}: {len(prior_pools)} "
+                  f"({len(prior_candidates)} previously-surfaced candidates)")
 
-        resume_records = resume_repository.get_all(db)
-        if similar_res_ids is not None:
-            resume_records = [r for r in resume_records if r.id in similar_res_ids]
-            
+        print(f"[TIMING] pool sizes → linkedin={len(li_records)} resume={len(resume_records)}")
+
         # We're done reading from `db` for this request. Close it now instead of
         # leaving it open-but-idle through the GitHub + Ollama pipeline below —
         # Neon drops idle SSL connections, and an idle-but-open session here just
@@ -342,74 +370,108 @@ async def generate_talent_pool(payload: TalentPoolRequest, db: Session = Depends
         # explicitly is safe/idempotent (get_db's finally will close() again, a no-op).
         db.close()
 
-        # Step 4 — GitHub search with smart query
-        _, github_candidates = await candidate_search_service.search_github_candidates(
-            skills=jd.required_skills or [],
-            location=location,
-            limit=min(payload.limit, MAX_GITHUB_FETCH),
-            seniority_level=jd.seniority_level,
-            github_language=payload.github_language,
-            min_followers=payload.min_followers,
-            min_repos=payload.min_repos,
-        )
+        # Step 4 — GitHub search with smart query (skipped entirely if disabled —
+        # real latency savings, not a post-hoc filter on fetched results)
+        if payload.include_github:
+            with timed(f"Step 4 — GitHub search + fetch (limit={min(payload.limit, MAX_GITHUB_FETCH)})"):
+                _, github_candidates = await candidate_search_service.search_github_candidates(
+                    skills=jd.required_skills or [],
+                    location=location,
+                    limit=min(payload.limit, MAX_GITHUB_FETCH),
+                    seniority_level=jd.seniority_level,
+                    github_language=payload.github_language,
+                    min_followers=payload.min_followers,
+                    min_repos=payload.min_repos,
+                )
+        else:
+            github_candidates = []
+            print("[TIMING] Step 4 — GitHub search + fetch: skipped (include_github=False)")
+        print(f"[TIMING] github candidates fetched: {len(github_candidates)}")
 
         # Step 5 — normalize all three sources
-        unified_github   = normalization_service.normalize_github_list(github_candidates)
-        unified_linkedin = normalization_service.normalize_linkedin_list(
-            [_record_to_linkedin_profile(r) for r in li_records]
-        )
-        unified_resume = normalization_service.normalize_linkedin_list(
-            [_record_to_linkedin_profile(r, "resume") for r in resume_records]
-        )
-        all_candidates = normalization_service.deduplicate(
-            unified_github + unified_linkedin + unified_resume
-        )
+        with timed("Step 5 — Normalize + deduplicate"):
+            unified_github   = normalization_service.normalize_github_list(github_candidates)
+            unified_linkedin = normalization_service.normalize_linkedin_list(
+                [_record_to_linkedin_profile(r) for r in li_records]
+            )
+            unified_resume = normalization_service.normalize_linkedin_list(
+                [_record_to_linkedin_profile(r, "resume") for r in resume_records]
+            )
+            all_candidates = normalization_service.deduplicate(
+                unified_github + unified_linkedin + unified_resume
+            )
 
-        # Build name → similarity map for scoring
-        named_similarity: dict[str, float] = {}
-        for r in li_records:
-            key = f"linkedin:{r.id}"
-            if key in similarity_map:
-                named_similarity[r.full_name] = similarity_map[key]
-        for r in resume_records:
-            key = f"resume:{r.id}"
-            if key in similarity_map:
-                named_similarity[r.full_name] = similarity_map[key]
+            # Build name → similarity map for scoring
+            named_similarity: dict[str, float] = {}
+            for r in li_records:
+                key = f"linkedin:{r.id}"
+                if key in similarity_map:
+                    named_similarity[r.full_name] = similarity_map[key]
+            for r in resume_records:
+                key = f"resume:{r.id}"
+                if key in similarity_map:
+                    named_similarity[r.full_name] = similarity_map[key]
+
+        # Step 5.5 — exclude candidates already surfaced in a prior pool for this JD
+        if payload.exclude_previously_shown and (prior_seen_emails or prior_seen_names):
+            with timed("Step 5.5 — Exclude previously-surfaced candidates"):
+                before = len(all_candidates)
+                all_candidates = [
+                    c for c in all_candidates
+                    if not normalization_service.is_previously_seen(c, prior_seen_emails, prior_seen_names)
+                ]
+                print(f"[TIMING] excluded {before - len(all_candidates)} candidates "
+                      f"already seen in a prior pool for jd_id={payload.jd_id}")
 
         # Step 6 — Stage 1 filter
-        filtered = matching_service.filter_candidates(
-            candidates=all_candidates, jd=jd,
-            min_score=payload.min_score,
-            similarity_map=named_similarity,
-        )
+        with timed(f"Step 6 — Stage 1 rule-based scoring ({len(all_candidates)} candidates)"):
+            filtered = matching_service.filter_candidates(
+                candidates=all_candidates, jd=jd,
+                min_score=payload.min_score,
+                similarity_map=named_similarity,
+            )
+        print(f"[TIMING] candidates passing stage 1: {len(filtered)} "
+              f"(will evaluate top {min(len(filtered), MAX_EVALUATED)})")
 
         # Step 7 — Stage 2 Ollama evaluation
-        evaluated = await evaluation_service.evaluate_all(
-            filtered=filtered, jd=jd, max_evaluated=MAX_EVALUATED,
-        )
+        # Only candidates with composite Stage-1 score >= LLM_SCORE_THRESHOLD get
+        # an actual Ollama call; the rest are evaluated from Stage-1 data directly
+        # (see evaluation_service._template_evaluation). filtered is already
+        # sorted by composite_score descending, so the strongest candidates
+        # always get the real LLM evaluation first.
+        with timed(f"Step 7 — Stage 2 Ollama evaluation (max {MAX_EVALUATED}, "
+                    f"llm_threshold={LLM_SCORE_THRESHOLD})"):
+            evaluated = await evaluation_service.evaluate_all(
+                filtered=filtered, jd=jd, max_evaluated=MAX_EVALUATED,
+                llm_score_threshold=LLM_SCORE_THRESHOLD,
+            )
 
         # Step 8 — Save and paginate
         # NOTE: `db` was checked out at the start of this request and has likely
         # sat idle through minutes of GitHub/Ollama calls above. Neon (serverless
         # Postgres) drops idle SSL connections, so we open a fresh short-lived
         # session here rather than reuse a possibly-dead one.
-        write_db = SessionLocal()
-        try:
-            pool = talent_pool_repository.create(
-                db=write_db, jd_id=payload.jd_id, job_role=jd.job_role,
-                candidates=evaluated,
-                filter_params={
-                    "location": location, "limit": payload.limit,
-                    "min_score": payload.min_score,
-                    "github_language": payload.github_language,
-                    "min_followers": payload.min_followers,
-                },
-            )
-        finally:
-            write_db.close()
+        with timed("Step 8 — Save talent pool (DB write)"):
+            write_db = SessionLocal()
+            try:
+                pool = talent_pool_repository.create(
+                    db=write_db, jd_id=payload.jd_id, job_role=jd.job_role,
+                    candidates=evaluated,
+                    filter_params={
+                        "location": location, "limit": payload.limit,
+                        "min_score": payload.min_score,
+                        "github_language": payload.github_language,
+                        "min_followers": payload.min_followers,
+                    },
+                )
+            finally:
+                write_db.close()
 
         total_pages = max(1, math.ceil(len(evaluated) / payload.page_size))
         start = (payload.page - 1) * payload.page_size
+
+        pipeline_timer.stop()
+
         return TalentPoolResponse(
             pool_id=pool.id, jd_id=payload.jd_id, job_role=jd.job_role,
             generated_at=pool.generated_at, total_candidates=len(evaluated),
@@ -418,6 +480,7 @@ async def generate_talent_pool(payload: TalentPoolRequest, db: Session = Depends
         )
 
     except Exception as e:
+        pipeline_timer.stop()
         raise HTTPException(status_code=500, detail=str(e))
 
 
