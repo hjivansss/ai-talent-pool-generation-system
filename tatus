@@ -1,0 +1,10 @@
+* [33m8caba92[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m fix: add skill-phrase flattening utility + fix JD extraction prompt JD extraction (small local LLM) sometimes bundled multiple technologies into one required_skills entry, e.g. 'Proficiency in HTML5, CSS3, JavaScript, TypeScript' as ONE string instead of four — root cause of 0 GitHub results (confirmed on jd_id=9 across 3 test runs) and coarsened skill_match_score. New skill_utils.py provides flatten_skill_phrases() to split bundled entries into atomic tokens. Extraction prompt also updated to request atomic entries going forward, with a worked example. Wiring into matching_service.py and candidate_search_service.py is a separate commit.
+* [33mf63c664[m imported datetime
+* [33m13c5f4a[m fix: exclude previously-surfaced candidates when regenerating a pool
+* [33mc2e746d[m fix: dedup LinkedIn/resume records on upload instead of inserting duplicates
+* [33m6bf1a22[m chore: keep timing instrumentation used to diagnose latency
+* [33mc444774[m fix: consistent Stage-1 scoring weights across candidate sources
+* [33ma30afd0[m perf: skip Ollama for weak Stage-1 candidates (Option C)
+* [33mb519df9[m perf: drop GitHub per-repo /languages calls, reuse HTTP client
+* [33mb5cd752[m perf: add Ollama keep_alive and num_predict cap
+* [33m32605af[m[33m ([m[1;31morigin/main[m[33m)[m feat(cors): enable CORS via configurable ALLOWED_ORIGINS setting
