@@ -1,7 +1,7 @@
 # Phase 6 — Talent pool request and response schemas.
 
 from typing import List, Optional, Dict
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from datetime import datetime
 
 
@@ -18,6 +18,25 @@ class TalentPoolRequest(BaseModel):
     github_language: Optional[str] = None   # e.g. "python", "kotlin"
     min_followers: Optional[int] = None     # e.g. 50 for senior roles
     min_repos: Optional[int] = None         # e.g. 10 for active developers
+    # If True (default), candidates already surfaced in an earlier pool for
+    # this jd_id are excluded before scoring — regenerating a pool gives you
+    # new candidates instead of the same ones again. Set False to re-run the
+    # full search unfiltered (e.g. to re-rank everyone after a JD edit).
+    exclude_previously_shown: bool = True
+
+    # Which candidate sources to include. All default to True — omitting
+    include_linkedin: bool = True
+    include_resume: bool = True
+    include_github: bool = True
+
+    @model_validator(mode="after")
+    def _at_least_one_source(self):
+        if not (self.include_linkedin or self.include_resume or self.include_github):
+            raise ValueError(
+                "At least one candidate source must be enabled "
+                "(include_linkedin, include_resume, or include_github)."
+            )
+        return self
 
 
 class TalentPoolViewRequest(BaseModel):

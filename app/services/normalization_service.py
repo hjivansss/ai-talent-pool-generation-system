@@ -142,6 +142,19 @@ def _compute_completeness(candidate: UnifiedCandidate) -> float:
 
 # ── Main normalization service ──────────────────────────────────────────────────
 
+def _identity_keys(
+    email: Optional[str], name: Optional[str], location: Optional[str]
+) -> tuple[Optional[str], Optional[str]]:
+    """Same identity logic used for in-request dedup and cross-pool exclusion."""
+    email_key = email.lower().strip() if email else None
+    if name:
+        loc = (location or "").lower().strip()
+        name_key = f"{name.lower().strip()}|{loc}"
+    else:
+        name_key = None
+    return email_key, name_key
+
+
 class NormalizationService:
 
     def from_github(self, profile: GitHubCandidateProfile) -> UnifiedCandidate:
@@ -288,19 +301,12 @@ class NormalizationService:
 
         for candidate in candidates:
             merged_into = None
+            email_key, name_key = _identity_keys(candidate.email, candidate.name, candidate.location)
 
-            # Email match
-            if candidate.email:
-                key = candidate.email.lower().strip()
-                if key in seen_emails:
-                    merged_into = seen_emails[key]
-
-            # Name + location match (fallback)
-            if merged_into is None and candidate.name:
-                loc = (candidate.location or "").lower().strip()
-                name_key = f"{candidate.name.lower().strip()}|{loc}"
-                if name_key in seen_names:
-                    merged_into = seen_names[name_key]
+            if email_key and email_key in seen_emails:
+                merged_into = seen_emails[email_key]
+            if merged_into is None and name_key and name_key in seen_names:
+                merged_into = seen_names[name_key]
 
             if merged_into is not None:
                 # Merge this candidate into the existing one
@@ -310,14 +316,37 @@ class NormalizationService:
             else:
                 idx = len(result)
                 result.append(candidate)
-
-                if candidate.email:
-                    seen_emails[candidate.email.lower().strip()] = idx
-                if candidate.name:
-                    loc = (candidate.location or "").lower().strip()
-                    seen_names[f"{candidate.name.lower().strip()}|{loc}"] = idx
+                if email_key:
+                    seen_emails[email_key] = idx
+                if name_key:
+                    seen_names[name_key] = idx
 
         return result
+
+    def seen_identities_from_prior_pools(
+        self, prior_pool_candidates: list[dict]
+    ) -> tuple[set[str], set[str]]:
+        """
+        Builds (seen_emails, seen_names) identity sets from previously-saved
+        TalentPool.candidates JSON (list of CandidateEvaluation dicts), using
+        the same identity logic as deduplicate(). Used by /talent-pool/generate
+        to exclude candidates already surfaced in an earlier pool for the same
+        JD — see router.py Step 5.5.
+        """
+        seen_emails, seen_names = set(), set()
+        for c in prior_pool_candidates:
+            email_key, name_key = _identity_keys(c.get("email"), c.get("name"), c.get("location"))
+            if email_key:
+                seen_emails.add(email_key)
+            if name_key:
+                seen_names.add(name_key)
+        return seen_emails, seen_names
+
+    def is_previously_seen(
+        self, candidate: UnifiedCandidate, seen_emails: set[str], seen_names: set[str]
+    ) -> bool:
+        email_key, name_key = _identity_keys(candidate.email, candidate.name, candidate.location)
+        return (email_key in seen_emails) or (name_key in seen_names)
 
     def _merge(self, base: UnifiedCandidate, other: UnifiedCandidate) -> UnifiedCandidate:
         """
