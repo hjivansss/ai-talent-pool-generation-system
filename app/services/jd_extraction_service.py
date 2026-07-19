@@ -25,9 +25,19 @@ JSON format:
 }}
 
 Rules:
-- required_skills: only hard technical skills explicitly stated as required
-- nice_to_have_skills: skills marked as preferred/bonus/nice-to-have
-- tools_and_platforms: infrastructure/DevOps/PM tools (Docker, AWS, Jira, etc.)
+- required_skills: only hard technical skills explicitly stated as required.
+  Each array entry must be ONE atomic skill/technology name — if the JD lists
+  several together ("HTML5, CSS3, JavaScript, TypeScript" or "React.js and
+  Node.js"), split them into separate array entries, one per technology.
+  Do NOT include lead-in phrases like "Proficiency in" or "Knowledge of" —
+  extract just the skill name itself.
+  Example: JD text "Proficiency in HTML5, CSS3, JavaScript, TypeScript" →
+  required_skills entries: "HTML5", "CSS3", "JavaScript", "TypeScript"
+  (four separate strings), NOT one combined string.
+- nice_to_have_skills: skills marked as preferred/bonus/nice-to-have. Same
+  atomic-entry rule as required_skills.
+- tools_and_platforms: infrastructure/DevOps/PM tools (Docker, AWS, Jira,
+  etc.). Same atomic-entry rule.
 - domain: industry domain if mentioned (fintech, healthtech, ecommerce, etc.)
 - location: city/country/remote if stated; null otherwise
 - All list fields default to [] if nothing found
