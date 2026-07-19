@@ -8,6 +8,24 @@ class Settings(BaseSettings):
 
     OLLAMA_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen2.5-coder:3b"
+    # Keeps the model resident in Ollama's memory between requests so we don't pay a ~60-70s cold-load tax on the first call of every run (measured on
+    # 2026-07-18: first eval call was 97s vs ~35s steady-state, same prompt size).
+    OLLAMA_KEEP_ALIVE: str = "30m"
+    # Hard cap on generated tokens per Stage-2 evaluation call. Generation is
+    # the dominant cost on CPU-only hardware (measured: ~35s/candidate on an
+    # i3-1115G4) — capping output length is the single biggest lever we have
+    # on that hardware, more effective than trimming the prompt.
+    OLLAMA_NUM_PREDICT: int = 180
+
+    # Stage 2 (Ollama) tuning — see evaluation_service.py
+    MAX_EVALUATED: int = 5          # candidates considered for the final pool
+    # Candidates below this composite Stage-1 score don't get an Ollama call at
+    # all — their evaluation is generated directly from Stage-1 data (see
+    # evaluation_service._template_evaluation). Weak candidates rarely need an
+    # LLM to tell you they're missing most of the required skills; measured
+    # run 2026-07-18 spent 154s of 311s evaluating 4 candidates who all scored
+    # "Partial Match"/"Not Recommended" — that's compute worth skipping.
+    LLM_SCORE_THRESHOLD: float = 0.35
 
     DATABASE_URL: str 
     
