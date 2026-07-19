@@ -1,11 +1,13 @@
 # Builds GitHub search query and converts GitHub API data into clean candidate objects.
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
 from app.integrations.github_client import github_client
 from app.schemas.candidate_schema import GitHubCandidateProfile, GitHubRepoSummary, LinkedInProfile
 from app.models.job_description import JobDescription
+from app.services.skill_utils import flatten_skill_phrases
 
 
 # Maps common skill names to GitHub language qualifiers
@@ -35,12 +37,17 @@ class CandidateSearchService:
         - Adjusts follower threshold based on seniority
         - Accepts optional recruiter overrides for language/followers/repos
         """
-        skill_query = " OR ".join(skills[:3])
+        # Flatten any bundled skill phrases (e.g. "Proficiency in HTML5, CSS3,
+        # JavaScript" as one entry) before building the query — GitHub's search
+        # ANDs all words in a non-OR-separated phrase together, so a bundled
+        # entry becomes an unmatchable literal-phrase search. See skill_utils.py.
+        atomic_skills = flatten_skill_phrases(skills)
+        skill_query = " OR ".join(atomic_skills[:3])
 
         # Detect language from skills if not explicitly provided
         language = github_language
         if not language:
-            for skill in skills:
+            for skill in atomic_skills:
                 detected = LANGUAGE_MAP.get(skill.lower())
                 if detected:
                     language = detected
@@ -86,7 +93,26 @@ class CandidateSearchService:
                 scored.append((stars, summary))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [s for _, s in scored[:5]], list(dict.fromkeys(all_topics)), total_stars, total_forks
+        # all_topics was unbounded — a candidate with many tagged repos could
+        # produce a very long list that gets stored/returned for no benefit.
+        deduped_topics = list(dict.fromkeys(all_topics))[:15]
+        return [s for _, s in scored[:5]], deduped_topics, total_stars, total_forks
+
+    def _top_languages_from_repos(self, repos: list[dict]) -> dict[str, int]:
+        """
+        Approximates language weighting from each repo's primary `language`
+        field, which GitHub already returns as part of the repo list — no
+        extra HTTP call needed. Replaces the old per-repo /languages endpoint
+        aggregation (github_client.get_aggregated_languages), which cost
+        ~7-10 extra API calls per candidate for marginally more precise
+        (byte-weighted vs repo-count-weighted) data. See github_client.py note.
+        """
+        counts: dict[str, int] = {}
+        for repo in repos:
+            lang = repo.get("language")
+            if lang and not repo.get("fork"):
+                counts[lang] = counts.get(lang, 0) + 1
+        return dict(sorted(counts.items(), key=lambda x: x[1], reverse=True))
 
     def _parse_events(self, events: list[dict]) -> tuple[list[str], int]:
         now = datetime.now(timezone.utc)
@@ -113,21 +139,29 @@ class CandidateSearchService:
             return None
 
     async def _build_rich_profile(self, username: str) -> Optional[GitHubCandidateProfile]:
+        candidate_start = time.perf_counter()
         try:
             profile, repos, events = await asyncio.gather(
                 github_client.get_user_profile(username),
                 github_client.get_user_repos(username, limit=30),
                 github_client.get_user_events(username, limit=30),
             )
-        except Exception:
+        except Exception as e:
+            print(f"[TIMING]   GitHub fetch — {username!r}: FAILED after "
+                  f"{time.perf_counter() - candidate_start:.2f}s ({e})")
             return None
+        core_fetch_elapsed = time.perf_counter() - candidate_start
 
         if profile.get("type") == "Organization":
             return None
 
-        top_languages = await github_client.get_aggregated_languages(username, repos)
+        top_languages = self._top_languages_from_repos(repos)
         top_repos, all_topics, total_stars, total_forks = self._parse_repos(repos)
         activity_types, active_days = self._parse_events(events)
+
+        total_elapsed = time.perf_counter() - candidate_start
+        print(f"[TIMING]   GitHub fetch — {username!r}: {total_elapsed:.2f}s "
+              f"(profile+repos+events, languages derived in-memory — no extra calls)")
 
         return GitHubCandidateProfile(
             username=profile.get("login", username),
@@ -172,10 +206,17 @@ class CandidateSearchService:
             min_repos=min_repos,
         )
         print(f"[GitHubSearch] query: {query!r}")
+        search_start = time.perf_counter()
         users = await github_client.search_users(query=query, limit=limit)
-        print(f"[GitHubSearch] search/users returned {len(users)} candidate logins")
+        print(f"[TIMING] GitHub search/users: {time.perf_counter() - search_start:.2f}s "
+              f"({len(users)} candidate logins)")
+
+        enrich_start = time.perf_counter()
         tasks = [self._build_rich_profile(u["login"]) for u in users if u.get("login")]
         results = await asyncio.gather(*tasks)
+        print(f"[TIMING] GitHub per-candidate enrichment (all {len(tasks)} concurrently): "
+              f"{time.perf_counter() - enrich_start:.2f}s wall-clock")
+
         profiles = [r for r in results if r is not None]
         print(f"[GitHubSearch] {len(profiles)}/{len(users)} profiles built successfully "
               f"({len(users) - len(profiles)} dropped — org accounts or fetch failures)")
