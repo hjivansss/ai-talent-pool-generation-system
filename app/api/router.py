@@ -73,6 +73,7 @@ def _record_to_linkedin_profile(r, default_source: str = "linkedin_manual") -> L
         current_role=r.current_role, current_company=r.current_company,
         open_to_work=r.open_to_work or False,
         source=getattr(r, "source", None) or default_source,
+        file_url=getattr(r, "file_url", None),
     )
 
 
@@ -102,7 +103,7 @@ async def test_ollama():
 # ── Job Description ─────────────────────────────────────────────────────────────
 
 @router.post("/extract_jd", response_model=ExtractedJDResponse)
-async def extract_jd(payload: JobDescriptionRequest):
+async def extract_jd(payload: JobDescriptionRequest, current_user: User = Depends(require_role("recruiter"))):
     try:
         return await jd_extraction_service.extract(payload.job_description)
     except Exception as e:
@@ -110,11 +111,16 @@ async def extract_jd(payload: JobDescriptionRequest):
 
 
 @router.post("/extract_and_save_jd", response_model=SavedJDResponse)
-async def extract_and_save_jd(payload: JobDescriptionRequest, db: Session = Depends(get_db)):
+async def extract_and_save_jd(
+    payload: JobDescriptionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("recruiter")),
+):
     try:
         extracted = await jd_extraction_service.extract(payload.job_description)
         saved = job_description_repository.create(
-            db=db, original_text=payload.job_description, extracted_data=extracted
+            db=db, original_text=payload.job_description, extracted_data=extracted,
+            created_by_user_id=current_user.id,
         )
         # Embed JD and cache in DB for faster talent pool generation
         jd_text = embedding_service.build_jd_text(saved)
@@ -130,7 +136,10 @@ async def extract_and_save_jd(payload: JobDescriptionRequest, db: Session = Depe
 # ── GitHub candidate search ─────────────────────────────────────────────────────
 
 @router.post("/search/github", response_model=CandidateSearchResponse)
-async def search_github_candidates(payload: CandidateSearchRequest):
+async def search_github_candidates(
+    payload: CandidateSearchRequest,
+    current_user: User = Depends(require_role("recruiter")),
+):
     try:
         query, candidates = await candidate_search_service.search_github_candidates(
             skills=payload.skills, location=payload.location,
@@ -144,7 +153,11 @@ async def search_github_candidates(payload: CandidateSearchRequest):
 # ── LinkedIn ────────────────────────────────────────────────────────────────────
 
 @router.post("/ingest/linkedin", response_model=LinkedInIngestResponse)
-async def ingest_linkedin_profiles(payload: LinkedInIngestRequest, db: Session = Depends(get_db)):
+async def ingest_linkedin_profiles(
+    payload: LinkedInIngestRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("recruiter")),
+):
     saved = []
     for profile in payload.profiles:
         try:
@@ -210,7 +223,11 @@ async def upload_linkedin_zip(
 
 
 @router.get("/linkedin/candidates", response_model=list[LinkedInProfile])
-def get_linkedin_candidates(open_to_work_only: bool = Query(False), db: Session = Depends(get_db)):
+def get_linkedin_candidates(
+    open_to_work_only: bool = Query(False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("recruiter")),
+):
     records = linkedin_repository.get_open_to_work(db) if open_to_work_only else linkedin_repository.get_all(db)
     return [_record_to_linkedin_profile(r) for r in records]
 
@@ -270,7 +287,10 @@ async def upload_resume(
 
 
 @router.get("/resume/candidates", response_model=list[LinkedInProfile])
-def get_resume_candidates(db: Session = Depends(get_db)):
+def get_resume_candidates(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("recruiter")),
+):
     return [_record_to_linkedin_profile(r, "resume") for r in resume_repository.get_all(db)]
 
 
@@ -324,7 +344,11 @@ async def normalize_all(
 # ── Talent Pool Generation ──────────────────────────────────────────────────────
 
 @router.post("/talent-pool/generate", response_model=TalentPoolResponse)
-async def generate_talent_pool(payload: TalentPoolRequest, db: Session = Depends(get_db)):
+async def generate_talent_pool(
+    payload: TalentPoolRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("recruiter")),
+):
     """
     Full pipeline:
     1. Fetch JD → get/compute JD embedding
@@ -335,7 +359,10 @@ async def generate_talent_pool(payload: TalentPoolRequest, db: Session = Depends
     6. Stage 2 Ollama evaluation on top candidates
     7. Save ranked pool to DB → return paginated
     """
-    jd = job_description_repository.get_by_id(db=db, jd_id=payload.jd_id)
+    # Scoped to owner — a recruiter can only generate a pool for their own
+    # JD, and a 404 here (rather than 403) deliberately doesn't reveal
+    # whether a JD with this id exists at all under someone else's account.
+    jd = job_description_repository.get_by_id(db=db, jd_id=payload.jd_id, owner_user_id=current_user.id)
     if not jd:
         raise HTTPException(status_code=404, detail=f"JD {payload.jd_id} not found.")
     db.expunge(jd)
@@ -381,7 +408,7 @@ async def generate_talent_pool(payload: TalentPoolRequest, db: Session = Depends
         prior_seen_names: set[str] = set()
         if payload.exclude_previously_shown:
             with timed("Step 3.5 — Load prior pool identities (DB)"):
-                prior_pools = talent_pool_repository.get_by_jd_id(db, payload.jd_id)
+                prior_pools = talent_pool_repository.get_by_jd_id(db, payload.jd_id, owner_user_id=current_user.id)
                 prior_candidates = [c for pool in prior_pools for c in (pool.candidates or [])]
                 prior_seen_emails, prior_seen_names = normalization_service.seen_identities_from_prior_pools(
                     prior_candidates
@@ -491,6 +518,7 @@ async def generate_talent_pool(payload: TalentPoolRequest, db: Session = Depends
                         "github_language": payload.github_language,
                         "min_followers": payload.min_followers,
                     },
+                    created_by_user_id=current_user.id,
                 )
             finally:
                 write_db.close()
@@ -518,8 +546,9 @@ def get_talent_pool(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=50),
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("recruiter")),
 ):
-    pool = talent_pool_repository.get_by_id(db=db, pool_id=pool_id)
+    pool = talent_pool_repository.get_by_id(db=db, pool_id=pool_id, owner_user_id=current_user.id)
     if not pool:
         raise HTTPException(status_code=404, detail=f"Talent pool {pool_id} not found.")
     all_candidates = [CandidateEvaluation(**c) for c in pool.candidates]
@@ -534,8 +563,12 @@ def get_talent_pool(
 
 
 @router.get("/talent-pool/jd/{jd_id}/summary", response_model=list[TalentPoolSummary])
-def get_talent_pool_summaries(jd_id: int, db: Session = Depends(get_db)):
-    pools = talent_pool_repository.get_by_jd_id(db=db, jd_id=jd_id)
+def get_talent_pool_summaries(
+    jd_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("recruiter")),
+):
+    pools = talent_pool_repository.get_by_jd_id(db=db, jd_id=jd_id, owner_user_id=current_user.id)
     if not pools:
         raise HTTPException(status_code=404, detail=f"No pools found for JD {jd_id}.")
     return [
@@ -548,5 +581,8 @@ def get_talent_pool_summaries(jd_id: int, db: Session = Depends(get_db)):
     ]
 
 @router.get("/jd", response_model=list[JDListItem])
-def list_job_descriptions(db: Session = Depends(get_db)):
-    return job_description_repository.get_all(db)
+def list_job_descriptions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("recruiter")),
+):
+    return job_description_repository.get_all(db, owner_user_id=current_user.id)
