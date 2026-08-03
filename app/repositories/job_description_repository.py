@@ -10,6 +10,7 @@ class JobDescriptionRepository:
         db: Session,
         original_text: str,
         extracted_data: ExtractedJDResponse,
+        created_by_user_id: int,
     ) -> JobDescription:
         job_description = JobDescription(
             original_text        = original_text,
@@ -24,18 +25,24 @@ class JobDescriptionRepository:
             key_responsibilities = extracted_data.key_responsibilities,
             tools_and_platforms  = extracted_data.tools_and_platforms,
             location             = extracted_data.location,
+            created_by_user_id   = created_by_user_id,
         )
         db.add(job_description)
         db.commit()
         db.refresh(job_description)
         return job_description
     
-    def get_by_id(self, db: Session, jd_id: int) -> JobDescription | None:
-        return db.query(JobDescription).filter(JobDescription.id == jd_id).first()
+    def get_by_id(self, db: Session, jd_id: int, owner_user_id: int) -> JobDescription | None:
+        """Scoped to owner — a recruiter can only fetch their own JDs."""
+        return db.query(JobDescription).filter(
+            JobDescription.id == jd_id,
+            JobDescription.created_by_user_id == owner_user_id,
+        ).first()
     
-    def get_all(self, db: Session, limit: int = 100) -> list[JobDescription]:
+    def get_all(self, db: Session, owner_user_id: int, limit: int = 100) -> list[JobDescription]:
         return (
             db.query(JobDescription)
+            .filter(JobDescription.created_by_user_id == owner_user_id)
             .order_by(JobDescription.created_at.desc())
             .limit(limit)
             .all()

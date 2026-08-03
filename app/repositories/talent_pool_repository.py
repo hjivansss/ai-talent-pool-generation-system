@@ -14,6 +14,7 @@ class TalentPoolRepository:
         job_role: str,
         candidates: list[CandidateEvaluation],
         filter_params: dict,
+        created_by_user_id: int,
     ) -> TalentPool:
         tier1 = sum(1 for c in candidates if c.tier == 1)
         tier2 = sum(1 for c in candidates if c.tier == 2)
@@ -28,29 +29,34 @@ class TalentPoolRepository:
             tier2_count      = tier2,
             tier3_count      = tier3,
             filter_params    = filter_params,
+            created_by_user_id = created_by_user_id,
         )
         db.add(pool)
         db.commit()
         db.refresh(pool)
         return pool
 
-    def get_by_id(self, db: Session, pool_id: int) -> TalentPool | None:
-        return db.query(TalentPool).filter(TalentPool.id == pool_id).first()
+    def get_by_id(self, db: Session, pool_id: int, owner_user_id: int) -> TalentPool | None:
+        """Scoped to owner — a recruiter can only fetch their own pools."""
+        return db.query(TalentPool).filter(
+            TalentPool.id == pool_id,
+            TalentPool.created_by_user_id == owner_user_id,
+        ).first()
 
-    def get_by_jd_id(self, db: Session, jd_id: int) -> list[TalentPool]:
-        """Returns all pools generated for a JD, newest first."""
+    def get_by_jd_id(self, db: Session, jd_id: int, owner_user_id: int) -> list[TalentPool]:
+        """Returns all pools generated for a JD by this recruiter, newest first."""
         return (
             db.query(TalentPool)
-            .filter(TalentPool.jd_id == jd_id)
+            .filter(TalentPool.jd_id == jd_id, TalentPool.created_by_user_id == owner_user_id)
             .order_by(TalentPool.generated_at.desc())
             .all()
         )
 
-    def get_latest_by_jd_id(self, db: Session, jd_id: int) -> TalentPool | None:
-        """Returns the most recently generated pool for a JD."""
+    def get_latest_by_jd_id(self, db: Session, jd_id: int, owner_user_id: int) -> TalentPool | None:
+        """Returns the most recently generated pool for a JD, scoped to owner."""
         return (
             db.query(TalentPool)
-            .filter(TalentPool.jd_id == jd_id)
+            .filter(TalentPool.jd_id == jd_id, TalentPool.created_by_user_id == owner_user_id)
             .order_by(TalentPool.generated_at.desc())
             .first()
         )
