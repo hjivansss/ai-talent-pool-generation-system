@@ -8,8 +8,10 @@ from app.models.job_description import JobDescription
 from app.models.linkedin_profile import LinkedInProfileModel
 from app.models.resume import ResumeModel
 from app.models.talent_pool import TalentPool
+from app.models.user import User
 from app.services import vector_store
 from fastapi.middleware.cors import CORSMiddleware
+from app.api.auth_router import router as auth_router
 
 Base.metadata.create_all(bind=engine)
 
@@ -40,6 +42,8 @@ app.include_router(
     prefix="/api",
     tags=["API"]
 )
+
+app.include_router(auth_router)
 
 @app.get("/")
 def root():
