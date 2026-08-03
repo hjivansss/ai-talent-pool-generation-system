@@ -31,6 +31,18 @@ class Settings(BaseSettings):
     
     GITHUB_TOKEN: str | None = None
 
+    # Cloudinary — stores the raw uploaded resume file so recruiters can view
+    # the original document, not just the parsed data
+    CLOUDINARY_CLOUD_NAME: str | None = None
+    CLOUDINARY_API_KEY: str | None = None
+    CLOUDINARY_API_SECRET: str | None = None
+
+    # Auth — see app/core/security.py and app/services/auth_service.py.
+    JWT_SECRET_KEY: str 
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
+
+
     #calling enabled for CORS in the frontend, so that the frontend can make requests to the backend 
     # without being blocked by the browser's same-origin policy.
     ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
