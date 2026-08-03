@@ -25,11 +25,18 @@ class LinkedInRepository:
             ).first()
         return None
 
-    def create_or_update(self, db: Session, profile: LinkedInProfile) -> tuple[LinkedInProfileModel, bool]:
+    def create_or_update(
+        self,
+        db: Session,
+        profile: LinkedInProfile,
+        uploaded_by_user_id: int | None = None,
+        candidate_owner_user_id: int | None = None,
+    ) -> tuple[LinkedInProfileModel, bool]:
         """
         Returns (record, is_new). Re-uploading the same profile (matched by
-        email, or name+profile_url) updates the existing row in place instead
-        of inserting a duplicate — previously there was no check at all here.
+        email, or name+profile_url) updates the existing row in place.
+        Ownership fields overwritten on every call — see resume_repository's
+        create_or_update for the full reasoning (same pattern here).
         """
         existing = self.find_existing(db, profile)
         fields = dict(
@@ -49,7 +56,11 @@ class LinkedInRepository:
             current_company        = profile.current_company,
             open_to_work           = profile.open_to_work,
             source                 = profile.source,
+            uploaded_by_user_id    = uploaded_by_user_id,
         )
+        if candidate_owner_user_id is not None:
+            fields["candidate_owner_user_id"] = candidate_owner_user_id
+
         if existing:
             for key, value in fields.items():
                 setattr(existing, key, value)

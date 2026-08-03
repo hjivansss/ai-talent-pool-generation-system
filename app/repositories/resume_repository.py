@@ -26,11 +26,23 @@ class ResumeRepository:
         db: Session,
         profile: LinkedInProfile,
         file_name: str | None = None,
+        file_url: str | None = None,
+        uploaded_by_user_id: int | None = None,
+        candidate_owner_user_id: int | None = None,
     ) -> tuple[ResumeModel, bool]:
         """
         Returns (record, is_new). Re-uploading the same resume (matched by
         email, or full_name as fallback) updates the existing row instead of
-        inserting a duplicate — previously there was no check at all here.
+        inserting a duplicate.
+
+        Ownership fields are overwritten on every call, including re-uploads
+        — this matches the "always overwrite in place" decision: whoever
+        uploads most recently becomes the new uploaded_by_user_id, even if a
+        different party uploaded it originally. candidate_owner_user_id is
+        only passed when the uploader IS the candidate themselves (see
+        router.py) — a recruiter re-uploading does NOT clear an existing
+        candidate's ownership, since recruiter uploads pass None here and we
+        only overwrite candidate_owner_user_id when a non-None value is given.
         """
         existing = self.find_existing(db, profile)
         fields = dict(
@@ -51,7 +63,13 @@ class ResumeRepository:
             open_to_work            = profile.open_to_work,
             file_name               = file_name,
             source                  = "resume",
+            uploaded_by_user_id     = uploaded_by_user_id,
         )
+        if file_url is not None:
+            fields["file_url"] = file_url
+        if candidate_owner_user_id is not None:
+            fields["candidate_owner_user_id"] = candidate_owner_user_id
+
         if existing:
             for key, value in fields.items():
                 setattr(existing, key, value)
