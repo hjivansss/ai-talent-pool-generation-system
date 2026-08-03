@@ -105,6 +105,10 @@ class LinkedInProfile(BaseModel):
 
     source: str = "linkedin_manual"
 
+    # Cloudinary URL of the original uploaded file — only set for resumes
+    # (see resume_repository); always None for LinkedIn-sourced profiles
+    file_url: Optional[str] = None
+
 # ── LinkedIn request/response wrappers ──────────────────────────────────────────
 
 class LinkedInIngestRequest(BaseModel):
