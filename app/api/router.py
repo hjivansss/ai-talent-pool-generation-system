@@ -36,6 +36,9 @@ from app.services.matching_service import matching_service
 from app.services.evaluation_service import evaluation_service
 import math
 from app.repositories.resume_repository import resume_repository
+from app.services.auth_service import require_role
+from app.integrations.cloudinary_client import cloudinary_client
+from app.models.user import User
 
 from app.schemas.talent_pool_schema import (
     TalentPoolRequest,
@@ -163,6 +166,7 @@ async def upload_linkedin_zip(
     file: UploadFile = File(...),
     open_to_work: bool = Query(False),
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("recruiter", "candidate")),
 ):
     if not file.filename.endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only .zip files accepted.")
@@ -178,7 +182,15 @@ async def upload_linkedin_zip(
 
     profile.open_to_work = open_to_work
     try:
-        record = linkedin_repository.create_or_update(db=db, profile=profile)
+        # A candidate uploading their own profile owns it; a recruiter
+        # uploading on someone's behalf does not — that record stays
+        # "unclaimed" until the actual candidate registers and it's linked.
+        candidate_owner_id = current_user.id if current_user.role == "candidate" else None
+        record, is_new = linkedin_repository.create_or_update(
+            db=db, profile=profile,
+            uploaded_by_user_id=current_user.id,
+            candidate_owner_user_id=candidate_owner_id,
+        )
         unified = normalization_service.from_linkedin(profile)
         vector = await embedding_service.embed(embedding_service.build_candidate_text(unified))
         if vector:
@@ -188,7 +200,11 @@ async def upload_linkedin_zip(
         raise HTTPException(status_code=500, detail=f"Failed to save profile: {e}")
 
     return LinkedInZipUploadResponse(
-        message=f"Profile for '{profile.full_name}' parsed and saved successfully.",
+        message=(
+            f"Profile for '{profile.full_name}' saved successfully."
+            if is_new else
+            f"Profile for '{profile.full_name}' already existed — updated existing record."
+        ),
         profile=profile,
     )
 
@@ -207,6 +223,7 @@ async def upload_resume(
     file: UploadFile = File(...),
     open_to_work: bool = Query(True),
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("recruiter", "candidate")),
 ):
     if not any(file.filename.endswith(ext) for ext in [".pdf", ".docx", ".doc"]):
         raise HTTPException(status_code=400, detail="Only PDF and DOCX accepted.")
@@ -222,7 +239,18 @@ async def upload_resume(
 
     profile.open_to_work = open_to_work
     try:
-        record, is_new = resume_repository.create_or_update(db=db, profile=profile, file_name=file.filename)
+        # Push the raw file to Cloudinary so recruiters can view the original
+        # document later, not just the parsed fields. Doesn't raise on
+        # failure — see cloudinary_client.py — the upload still succeeds
+        # even if file storage is down or unconfigured.
+        file_url = cloudinary_client.upload_resume_file(file_bytes, file.filename)
+
+        candidate_owner_id = current_user.id if current_user.role == "candidate" else None
+        record, is_new = resume_repository.create_or_update(
+            db=db, profile=profile, file_name=file.filename, file_url=file_url,
+            uploaded_by_user_id=current_user.id,
+            candidate_owner_user_id=candidate_owner_id,
+        )
         unified = normalization_service.from_linkedin(profile)
         vector = await embedding_service.embed(embedding_service.build_candidate_text(unified))
         if vector:
