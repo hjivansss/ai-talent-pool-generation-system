@@ -28,3 +28,6 @@ class TalentPool(Base):
     filter_params     = Column(JSON, nullable=True)
 
     generated_at      = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Per-recruiter data isolation — same reasoning as JobDescription.
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
