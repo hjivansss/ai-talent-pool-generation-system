@@ -15,3 +15,11 @@ python-multipart
 pdfplumber
 python-docx
 pgvector
+
+bcrypt
+pyjwt
+cloudinary
+
+bcrypt
+pyjwt
+pydantic[email]
