@@ -1,5 +1,5 @@
 # Stores LinkedIn profiles in PostgreSQL.
-from sqlalchemy import Column, Integer, String, Text, JSON, Boolean, Float, DateTime
+from sqlalchemy import Column, Integer, String, Text, JSON, Boolean, Float, DateTime, ForeignKey
 from sqlalchemy.sql import func
 from app.core.database import Base
 
@@ -26,3 +26,7 @@ class LinkedInProfileModel(Base):
     # tracks whether profile came from manual entry or ZIP upload
     source                 = Column(String(50), default="linkedin_manual")
     created_at            = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Ownership — same pattern as ResumeModel
+    uploaded_by_user_id     = Column(Integer, ForeignKey("users.id"), nullable=True)
+    candidate_owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)

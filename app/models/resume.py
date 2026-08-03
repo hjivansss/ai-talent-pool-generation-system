@@ -1,5 +1,5 @@
 # Stores parsed resume profiles in PostgreSQL.
-from sqlalchemy import Column, Integer, String, Text, JSON, Boolean, Float, DateTime
+from sqlalchemy import Column, Integer, String, Text, JSON, Boolean, Float, DateTime, ForeignKey
 from sqlalchemy.sql import func
 from app.core.database import Base
 
@@ -24,5 +24,15 @@ class ResumeModel(Base):
     current_company        = Column(String(255), nullable=True)
     open_to_work           = Column(Boolean, default=False)
     file_name              = Column(String(255), nullable=True)  # original uploaded filename
+    # Cloudinary URL of the raw uploaded file — lets recruiters view 
+    file_url                = Column(String(1000), nullable=True)
     source                 = Column(String(50), default="resume")
     created_at             = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Ownership — see auth_service.py / router.py upload endpoints.
+    # uploaded_by_user_id: whoever actually performed the upload (recruiter OR candidate) — always set once auth is required.
+    # candidate_owner_user_id: set ONLY if this record belongs to a
+    # registered candidate account — null if a recruiter uploaded on behalf
+    # of someone who hasn't signed up ("unclaimed").
+    uploaded_by_user_id     = Column(Integer, ForeignKey("users.id"), nullable=True)
+    candidate_owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
