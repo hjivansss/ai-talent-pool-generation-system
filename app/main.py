@@ -43,7 +43,7 @@ app.include_router(
     tags=["API"]
 )
 
-app.include_router(auth_router)
+app.include_router(auth_router, prefix="/api", tags=["Auth_API"])
 
 @app.get("/")
 def root():

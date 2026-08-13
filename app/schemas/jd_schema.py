@@ -27,8 +27,7 @@ class SavedJDResponse(BaseModel):
     original_text: str
     job_role: str
     seniority_level: Optional[str] = None
-    required_skills: List[str]
-    nice_to_have_skills: List[str] = []
+    required_skills: List[str] = []
     experience_required: Optional[str] = None
     qualifications: List[str] = []
     employment_type: Optional[str] = None
@@ -46,6 +45,8 @@ class JDListItem(BaseModel):
     job_role: str
     seniority_level: Optional[str] = None
     location: Optional[str] = None
+    required_skills: List[str] = []
+    experience_required: Optional[str] = None
     created_at: datetime
 
     class Config:
