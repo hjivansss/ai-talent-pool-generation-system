@@ -89,3 +89,4 @@ class UnifiedCandidate(BaseModel):
     skill_match_score: Optional[float] = None
     experience_match_score: Optional[float] = None
     overall_fit_score: Optional[float] = None
+    resume_url: Optional[str] = None  
