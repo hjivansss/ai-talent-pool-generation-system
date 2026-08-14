@@ -185,6 +185,7 @@ class EvaluationService:
             skill_gap_analysis=data.get("skill_gap_analysis", ""),
             profile_completeness=candidate.profile_completeness,
             open_to_work=candidate.open_to_work,
+            resume_url=getattr(candidate, "resume_url", None),
         )
 
     async def evaluate_all(

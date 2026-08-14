@@ -29,7 +29,7 @@ class CloudinaryClient:
         try:
             result = cloudinary.uploader.upload(
                 file_bytes,
-                resource_type="raw",
+                resource_type="auto",
                 folder="resumes",
                 public_id=filename,
                 overwrite=True,

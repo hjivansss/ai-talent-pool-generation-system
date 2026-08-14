@@ -261,6 +261,7 @@ class NormalizationService:
             email=profile.email,
             phone=profile.phone,
             linkedin_url=profile.profile_url,
+            resume_url=profile.file_url,
             skills=skills,
             total_experience_years=profile.total_experience_years,
             current_role=profile.current_role,
@@ -367,6 +368,7 @@ class NormalizationService:
         base.email                 = base.email or other.email
         base.phone                 = base.phone or other.phone
         base.github_url            = base.github_url or other.github_url
+        base.resume_url = base.resume_url or other.resume_url
         base.linkedin_url          = base.linkedin_url or other.linkedin_url
         base.portfolio_url         = base.portfolio_url or other.portfolio_url
         base.top_languages         = base.top_languages or other.top_languages
